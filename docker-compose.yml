@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  # MySQL 服务
+  mysql:
+    image: mysql:8.0
+    platform: linux/arm64/v8
+    container_name: hm-dianping-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
+      - MYSQL_DATABASE=hmdp
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - hm-dianping-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 服务
+  redis:
+    image: redis:6.2-alpine
+    platform: linux/arm64/v8
+    container_name: hm-dianping-redis
+    command: redis-server
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - hm-dianping-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 前端服务
+  frontend:
+    image: nginx:alpine
+    container_name: hm-dianping-frontend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx-1.18.0/html/hmdp:/usr/share/nginx/html
+      - ./nginx-1.18.0/conf/nginx.conf:/etc/nginx/nginx.conf
+    networks:
+      - hm-dianping-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  hm-dianping-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:

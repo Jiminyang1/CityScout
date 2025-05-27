@@ -1,0 +1,11 @@
+FROM nginx:alpine
+
+# 复制已打包的前端文件到 Nginx
+COPY nginx-1.18.0/html/ /usr/share/nginx/html/
+
+# 复制 Nginx 配置
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 8080
+
+CMD ["nginx", "-g", "daemon off;"] 
