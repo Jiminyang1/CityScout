@@ -160,7 +160,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 获取锁成功, 我们开启独立线程更新缓存, 然后自身返回Redis中的数据
         if (Boolean.TRUE.equals(acquire)) {
-            CAHCHE_REBUILD_EXECUTOR.submit(() -> {
+            CACHE_REBUILD_EXECUTOR.submit(() -> {
                 try {
                     this.saveShopToRedis(id, 10L);
                 } catch (Exception e) {
@@ -274,5 +274,5 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok(shops);
     }
 
-    private static final ExecutorService CAHCHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10); // 线程池
+    private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10); // 线程池
 }
