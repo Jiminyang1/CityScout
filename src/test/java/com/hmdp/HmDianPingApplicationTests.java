@@ -5,6 +5,7 @@ import com.hmdp.service.IShopService;
 import io.lettuce.core.api.sync.RedisGeoCommands;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.junit.Assert;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -29,6 +30,9 @@ public class HmDianPingApplicationTests {
     @Test
     public void testSaveShop() {
         shopService.saveShopToRedis(1L, 1L);
+        String key = "cache:shop:" + 1L;
+        String value = stringRedisTemplate.opsForValue().get(key);
+        Assert.assertNotNull(value);
     }
 
     @Test

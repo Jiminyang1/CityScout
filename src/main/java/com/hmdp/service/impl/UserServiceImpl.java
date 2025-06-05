@@ -55,7 +55,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
         // 2. generate code
         String code = RandomUtil.randomNumbers(6);
-        // 3. save code to reids
+        // 3. save code to redis
         // session.setAttribute("code", code), and expire in 2 minutes
         String key = LOGIN_CODE_KEY + phone;
         stringRedisTemplate.opsForValue().set(key, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
@@ -87,7 +87,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         User user = query().eq("phone", loginForm.getPhone()).one();
         // 4. create new user
         if (user == null) {
-            user = createUnerWithPhone(loginForm.getPhone());
+            user = createUserWithPhone(loginForm.getPhone());
         }
 
         // 5. save user to redis
@@ -179,7 +179,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok(info);
     }
 
-    private User createUnerWithPhone(String phone) {
+    private User createUserWithPhone(String phone) {
         User user = new User();
         user.setPhone(phone);
         user.setNickName(USER_NICK_NAME_PREFIX + RandomUtil.randomNumbers(5));

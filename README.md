@@ -1,6 +1,6 @@
 # CityScout
 
-CityScout is a application for a discovery and review platform. It's built with Spring Boot and designed to handle features like user management, business listings, vouchers, and reviews.
+CityScout is an application for a discovery and review platform. It's built with Spring Boot and designed to handle features like user management, business listings, vouchers, and reviews.
 
 ## About The Project
 
