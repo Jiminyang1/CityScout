@@ -34,6 +34,11 @@ build/
 
 # Ignore SQL files
 *.sql
+!sql/*.sql
+!benchmarks/scripts/*.sql
+
+# Benchmark outputs
+benchmarks/results/
 
 # Ignore PDF files
 *.pdf

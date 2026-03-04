@@ -1,0 +1,11 @@
+{
+  "baseUrl": "http://localhost:8081",
+  "variant": "A",
+  "voucherId": 1,
+  "rate": 3000,
+  "warmupSeconds": 10,
+  "durationSeconds": 30,
+  "preAllocatedVUs": 400,
+  "maxVUs": 20000,
+  "timeoutMs": 2000
+}
