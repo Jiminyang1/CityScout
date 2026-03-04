@@ -16,7 +16,12 @@ public class RedisConstants {
     public static final String LOCK_SHOP_KEY = "lock:shop:";
     public static final Long LOCK_SHOP_TTL = 10L;
 
+    public static final String LOCK_ORDER_KEY = "lock:order:";
     public static final String SECKILL_STOCK_KEY = "seckill:stock:";
+    public static final String SECKILL_ORDER_KEY = "seckill:order:";
+
+    public static final String KAFKA_TOPIC_ORDER_CREATED = "order.created";
+
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";
     public static final String SHOP_GEO_KEY = "shop:geo:";

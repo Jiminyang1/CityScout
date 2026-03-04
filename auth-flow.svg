@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1650" width="1200" height="1650">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="10" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#444" />
+    </marker>
+    <style>
+      .title { font: 700 26px Arial, sans-serif; fill: #111; }
+      .subtitle { font: 600 18px Arial, sans-serif; fill: #222; }
+      .label { font: 600 15px Arial, sans-serif; fill: #111; }
+      .mono { font: 500 13px Menlo, Consolas, monospace; fill: #111; }
+      .note { font: 500 13px Arial, sans-serif; fill: #222; }
+      .small { font: 500 12px Arial, sans-serif; fill: #333; }
+      .box { fill: #fff; stroke: #999; stroke-width: 1.5; rx: 8; }
+      .lane { fill: #f5f7fa; stroke: #cbd5e1; stroke-width: 1.5; rx: 10; }
+      .section { fill: #eef2ff; stroke: #94a3b8; stroke-width: 1.5; rx: 10; }
+      .arrow { stroke: #444; stroke-width: 2; marker-end: url(#arrow); fill: none; }
+      .divider { stroke: #e2e8f0; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <text x="30" y="40" class="title">CityScout Authentication Flow (SMS Code + Token)</text>
+  <text x="30" y="66" class="note">Derived from source: controllers, interceptors, Redis usage</text>
+
+  <!-- Lanes -->
+  <g transform="translate(30,80)">
+    <rect width="1140" height="60" class="lane"/>
+    <text x="20" y="38" class="subtitle">Lanes: Client | Controllers | Interceptors | Redis | MySQL</text>
+  </g>
+
+  <!-- 1) Request Code -->
+  <g transform="translate(30,160)">
+    <rect width="1140" height="240" class="section"/>
+    <text x="16" y="32" class="subtitle">1) Request SMS Code</text>
+
+    <g transform="translate(16,56)">
+      <rect width="250" height="160" class="box"/>
+      <text x="10" y="22" class="label">Client</text>
+      <text x="10" y="46" class="mono">POST /api/user/code?phone=&lt;phone&gt;</text>
+      <text x="10" y="68" class="mono">Headers: none</text>
+      <text x="10" y="92" class="note">Requests a 6-digit login code.</text>
+    </g>
+
+    <path d="M280,136 H360" class="arrow"/>
+
+    <g transform="translate(360,56)">
+      <rect width="330" height="160" class="box"/>
+      <text x="10" y="22" class="label">UserController.sendCode</text>
+      <text x="10" y="46" class="mono">Validate phone (RegexUtils)</text>
+      <text x="10" y="68" class="mono">If invalid: fail("Invalid phone number")</text>
+      <text x="10" y="92" class="mono">Generate 6-digit code</text>
+      <text x="10" y="114" class="mono">Store in Redis, TTL 2m</text>
+    </g>
+
+    <path d="M690,136 H790" class="arrow"/>
+
+    <g transform="translate(790,56)">
+      <rect width="330" height="160" class="box"/>
+      <text x="10" y="22" class="label">Redis</text>
+      <text x="10" y="46" class="mono">SET login:code:&lt;phone&gt; = &lt;code&gt;</text>
+      <text x="10" y="68" class="mono">EX 2 minutes</text>
+      <text x="10" y="92" class="note">Used during login validation</text>
+    </g>
+  </g>
+
+  <!-- 2) Login -->
+  <g transform="translate(30,430)">
+    <rect width="1140" height="380" class="section"/>
+    <text x="16" y="32" class="subtitle">2) Login (Phone + Code)</text>
+
+    <g transform="translate(16,56)">
+      <rect width="250" height="300" class="box"/>
+      <text x="10" y="22" class="label">Client</text>
+      <text x="10" y="46" class="mono">POST /api/user/login</text>
+      <text x="10" y="68" class="mono">Body: {"phone":"...","code":"..."}</text>
+      <text x="10" y="92" class="note">On success, store token and</text>
+      <text x="10" y="112" class="note">send header authorization: &lt;token&gt;</text>
+    </g>
+
+    <path d="M280,206 H360" class="arrow"/>
+
+    <g transform="translate(360,56)">
+      <rect width="330" height="300" class="box"/>
+      <text x="10" y="22" class="label">UserController.login -&gt; UserServiceImpl.userLogin</text>
+      <text x="10" y="46" class="mono">1) Validate phone format</text>
+      <text x="10" y="68" class="mono">2) Get login:code:&lt;phone&gt;</text>
+      <text x="10" y="90" class="mono">   if missing/mismatch: fail("Invalid code")</text>
+      <text x="10" y="112" class="mono">3) DB: find or create user by phone</text>
+      <text x="10" y="134" class="mono">4) token = UUID + "_" + userId</text>
+      <text x="10" y="156" class="mono">5) Save UserDTO to Redis hash</text>
+      <text x="10" y="178" class="mono">   key: login:token:&lt;token&gt;</text>
+      <text x="10" y="200" class="mono">   TTL: 36000 minutes (~25 days)</text>
+      <text x="10" y="222" class="mono">6) Return token in response</text>
+    </g>
+
+    <path d="M690,206 H790" class="arrow"/>
+
+    <g transform="translate(790,56)">
+      <rect width="330" height="300" class="box"/>
+      <text x="10" y="22" class="label">Redis</text>
+      <text x="10" y="46" class="mono">HSET login:token:&lt;token&gt;</text>
+      <text x="10" y="68" class="mono">  id:&lt;userId&gt;, nickName, icon, ...</text>
+      <text x="10" y="90" class="mono">EXPIRE login:token:&lt;token&gt; 36000m</text>
+      <text x="10" y="112" class="note">Session state stored as a hash</text>
+    </g>
+  </g>
+
+  <!-- 3) Per-request Validation -->
+  <g transform="translate(30,840)">
+    <rect width="1140" height="520" class="section"/>
+    <text x="16" y="32" class="subtitle">3) Per-request Validation (Interceptors)</text>
+
+    <g transform="translate(16,56)">
+      <rect width="250" height="160" class="box"/>
+      <text x="10" y="22" class="label">Client</text>
+      <text x="10" y="46" class="mono">Request to /api/**</text>
+      <text x="10" y="68" class="mono">authorization: &lt;token&gt; (optional)</text>
+      <text x="10" y="92" class="note">Public endpoints work without token</text>
+    </g>
+
+    <path d="M280,136 H360" class="arrow"/>
+
+    <g transform="translate(360,56)">
+      <rect width="380" height="210" class="box"/>
+      <text x="10" y="22" class="label">RefreshTokenInterceptor (global)</text>
+      <text x="10" y="46" class="mono">1) Read header "authorization"</text>
+      <text x="10" y="68" class="mono">2) Validate: UUID_&lt;digits&gt; pattern</text>
+      <text x="10" y="90" class="mono">3) HGETALL login:token:&lt;token&gt;</text>
+      <text x="10" y="112" class="mono">4) If found: map to UserDTO</text>
+      <text x="10" y="134" class="mono">5) Refresh TTL to 36000 minutes</text>
+    </g>
+
+    <path d="M760,166 H845" class="arrow"/>
+
+    <g transform="translate(845,56)">
+      <rect width="325" height="210" class="box"/>
+      <text x="10" y="22" class="label">Redis</text>
+      <text x="10" y="46" class="mono">HGETALL login:token:&lt;token&gt;</text>
+      <text x="10" y="68" class="mono">EXPIRE login:token:&lt;token&gt; 36000m</text>
+    </g>
+
+    <line x1="46" y1="300" x2="1146" y2="300" class="divider"/>
+
+    <g transform="translate(16,320)">
+      <rect width="250" height="150" class="box"/>
+      <text x="10" y="22" class="label">Protected endpoints</text>
+      <text x="10" y="46" class="mono">/api/user/me</text>
+      <text x="10" y="68" class="mono">/api/voucher-order/**</text>
+    </g>
+
+    <path d="M280,396 H360" class="arrow"/>
+
+    <g transform="translate(360,340)">
+      <rect width="520" height="130" class="box"/>
+      <text x="10" y="22" class="label">LoginInterceptor (authorization)</text>
+      <text x="10" y="46" class="mono">If no UserHolder user -&gt; 401</text>
+      <text x="10" y="68" class="mono">Else: proceed to controller</text>
+      <text x="10" y="90" class="small">Whitelist: /api/user/code, /api/user/login, /api/blog/hot, /api/shop/**, /api/shop-type/**, /api/voucher/**, /api/upload/**</text>
+    </g>
+  </g>
+
+  <!-- 4) Logout -->
+  <g transform="translate(30,1390)">
+    <rect width="1140" height="220" class="section"/>
+    <text x="16" y="32" class="subtitle">4) Logout</text>
+
+    <g transform="translate(16,56)">
+      <rect width="250" height="140" class="box"/>
+      <text x="10" y="22" class="label">Client</text>
+      <text x="10" y="46" class="mono">POST /api/user/logout</text>
+      <text x="10" y="68" class="mono">authorization: &lt;token&gt;</text>
+    </g>
+
+    <path d="M280,126 H360" class="arrow"/>
+
+    <g transform="translate(360,56)">
+      <rect width="330" height="140" class="box"/>
+      <text x="10" y="22" class="label">UserController.logout -&gt; UserServiceImpl.logout</text>
+      <text x="10" y="46" class="mono">DEL login:token:&lt;token&gt;</text>
+      <text x="10" y="68" class="mono">UserHolder.removeUser()</text>
+    </g>
+
+    <path d="M690,126 H790" class="arrow"/>
+
+    <g transform="translate(790,56)">
+      <rect width="330" height="140" class="box"/>
+      <text x="10" y="22" class="label">Redis</text>
+      <text x="10" y="46" class="mono">Key deleted: login:token:&lt;token&gt;</text>
+    </g>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(30,20)">
+    <text x="860" y="20" class="small">Header: authorization</text>
+    <text x="860" y="36" class="small">Token: &lt;UUID&gt;_&lt;userId&gt;</text>
+    <text x="860" y="52" class="small">Regex: ^[0-9a-f-]{36}_\d+$</text>
+  </g>
+
+</svg>

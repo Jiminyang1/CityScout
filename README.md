@@ -88,11 +88,26 @@ This project provides the core backend functionalities for a platform where user
   docker-compose down
   ```
 
+## Authentication
+
+The backend uses SMS code login with a Redis-backed token session.
+
+- Flow: Request code ➜ Login with code ➜ Get token ➜ Send token in `authorization` header ➜ Interceptors validate and refresh TTL.
+- Token format: `<UUID>_<userId>` (example: `550e8400-e29b-41d4-a716-446655440000_12`).
+- Header name: `authorization`.
+- Redis keys:
+  - `login:code:<phone>`: 6-digit code, TTL 2 minutes.
+  - `login:token:<token>`: user hash (UserDTO), TTL 36000 minutes (~25 days), refreshed per request.
+- Endpoint prefix: all routes are served under `/api` (via `WebConfig`).
+- Public endpoints (no token): `/api/user/code`, `/api/user/login`, `/api/blog/hot`, `/api/shop/**`, `/api/shop-type/**`, `/api/voucher/**`, `/api/upload/**`.
+
+![Authentication Flow](auth-flow.svg)
+
 ## API Examples
 
-- `POST /user/login` - User login
-- `GET /shop/{id}` - Get shop details
-- `POST /voucher-order/seckill/{id}` - Secure a voucher via flash sale
+- `POST /api/user/login` - User login (returns token)
+- `GET /api/shop/{id}` - Get shop details
+- `POST /api/voucher-order/seckill/{id}` - Secure a voucher via flash sale
 
 ## Contributing
 
