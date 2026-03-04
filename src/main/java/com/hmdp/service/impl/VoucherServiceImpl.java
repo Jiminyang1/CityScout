@@ -52,7 +52,7 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         seckillVoucher.setEndTime(voucher.getEndTime());
         seckillVoucherService.save(seckillVoucher);
         //保存到redis
-        String key = "seckill:voucher:" + voucher.getId();
+        String key = com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY + voucher.getId();
         stringRedisTemplate.opsForValue().set(key, voucher.getStock().toString());
     }
 }

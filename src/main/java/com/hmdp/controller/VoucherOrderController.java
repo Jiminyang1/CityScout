@@ -1,6 +1,5 @@
 package com.hmdp.controller;
 
-
 import com.hmdp.dto.Result;
 import com.hmdp.service.IVoucherOrderService;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -12,7 +11,7 @@ import javax.annotation.Resource;
 
 /**
  * <p>
- *  前端控制器
+ * 前端控制器
  * </p>
  *
  * @author Jimin
@@ -20,7 +19,6 @@ import javax.annotation.Resource;
  */
 @RestController
 @RequestMapping("/voucher-order")
-
 public class VoucherOrderController {
 
     @Resource
@@ -28,6 +26,7 @@ public class VoucherOrderController {
 
     /**
      * 秒杀优惠券下单
+     *
      * @param voucherId 优惠券id
      * @return 结果
      */
