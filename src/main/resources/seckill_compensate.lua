@@ -1,23 +1,16 @@
 -- ARGV:
 -- 1: voucherId
 -- 2: userId
--- 3: orderId (reserved for tracing / compatibility)
 local voucherId = ARGV[1]
 local userId = ARGV[2]
 
 local stockKey = 'seckill:stock:' .. voucherId
 local orderKey = 'seckill:order:' .. voucherId
 
-local stock = tonumber(redis.call('get', stockKey) or '-1')
-if stock <= 0 then
+if redis.call('sismember', orderKey, userId) == 1 then
+    redis.call('srem', orderKey, userId)
+    redis.call('incrby', stockKey, 1)
     return 1
 end
-
-if redis.call('sismember', orderKey, userId) == 1 then
-    return 2
-end
-
-redis.call('incrby', stockKey, -1)
-redis.call('sadd', orderKey, userId)
 
 return 0
