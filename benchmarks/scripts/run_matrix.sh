@@ -17,13 +17,17 @@ DB_PORT=${DB_PORT:-3306}
 DB_USER=${DB_USER:-root}
 DB_PASS=${DB_PASS:-123456}
 DB_NAME=${DB_NAME:-hmdp}
-MYSQL=(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME")
+MYSQL_CONTAINER=${MYSQL_CONTAINER:-hm-dianping-mysql}
+MYSQL=()
 
 KAFKA_GROUP=${KAFKA_GROUP:-hmdp-order-group}
 BENCH_TOPIC=${BENCH_TOPIC:-order.created.bench}
 
 RATE_STAGE1=${RATE_STAGE1:-3000}
 VOUCHER_BASE=${VOUCHER_BASE:-900000}
+STAGE1_RUNS=${STAGE1_RUNS:-5}
+STAGE2_RUNS=${STAGE2_RUNS:-3}
+STAGE2_RATES=${STAGE2_RATES:-"3500 4500 5000 5500"}
 
 TS=$(date +%Y%m%d_%H%M%S)
 RESULT_DIR="$ROOT_DIR/benchmarks/results/$TS"
@@ -44,8 +48,16 @@ require_cmd() {
 
 require_cmd k6
 require_cmd jq
-require_cmd mysql
 require_cmd redis-cli
+
+if command -v mysql >/dev/null 2>&1; then
+  MYSQL=(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME")
+elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -q "^${MYSQL_CONTAINER}$"; then
+  MYSQL=(docker exec -i "$MYSQL_CONTAINER" mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME")
+else
+  echo "missing mysql client and mysql container (${MYSQL_CONTAINER}) not running"
+  exit 1
+fi
 
 if [[ ! -f "$TOKENS_FILE" ]]; then
   echo "tokens file missing: $TOKENS_FILE"
@@ -65,7 +77,7 @@ ensure_topic_ready() {
     return
   fi
 
-  docker exec hm-dianping-kafka kafka-topics.sh \
+  docker exec hm-dianping-kafka /opt/kafka/bin/kafka-topics.sh \
     --bootstrap-server localhost:9092 \
     --create \
     --if-not-exists \
@@ -92,12 +104,13 @@ wait_kafka_lag_zero() {
   start_ts=$(date +%s)
   while true; do
     local lag
-    lag=$(docker exec hm-dianping-kafka kafka-consumer-groups.sh \
+    local lag_report
+    lag_report=$(docker exec hm-dianping-kafka /opt/kafka/bin/kafka-consumer-groups.sh \
       --bootstrap-server localhost:9092 \
       --group "$KAFKA_GROUP" \
       --topic "$topic" \
-      --describe 2>/dev/null \
-      | awk 'NR>1 && $5 ~ /^[0-9]+$/ {sum+=$5} END{print sum+0}')
+      --describe 2>/dev/null || true)
+    lag=$(printf '%s\n' "$lag_report" | awk 'NR>1 && $5 ~ /^[0-9]+$/ {sum+=$5} END{print sum+0}')
     lag=${lag:-0}
     if [[ "$lag" == "0" ]]; then
       return
@@ -159,20 +172,23 @@ append_row() {
   local success_count no_stock_count duplicate_count lock_busy_count mq_error_count other_code_count
   local non200_count http5xx_count duplicate_users sold_count tps db_write_tps
 
-  req_count=$(read_metric "$raw_file" '.metrics.bench_request_count.values.count')
-  p50=$(read_metric "$raw_file" '.metrics.bench_latency.values["p(50)"]')
-  p95=$(read_metric "$raw_file" '.metrics.bench_latency.values["p(95)"]')
-  p99=$(read_metric "$raw_file" '.metrics.bench_latency.values["p(99)"]')
-  error_rate=$(read_metric "$raw_file" '.metrics.bench_error_rate.values.rate')
+  req_count=$(read_metric "$raw_file" '.metrics.bench_request_count.count')
+  p50=$(read_metric "$raw_file" '.metrics.bench_latency["p(50)"]')
+  if [[ "$p50" == "0" ]]; then
+    p50=$(read_metric "$raw_file" '.metrics.bench_latency.med')
+  fi
+  p95=$(read_metric "$raw_file" '.metrics.bench_latency["p(95)"]')
+  p99=$(read_metric "$raw_file" '.metrics.bench_latency["p(99)"]')
+  error_rate=$(read_metric "$raw_file" '.metrics.bench_error_rate.value')
 
-  success_count=$(read_metric "$raw_file" '.metrics.bench_success_count.values.count')
-  no_stock_count=$(read_metric "$raw_file" '.metrics.bench_no_stock_count.values.count')
-  duplicate_count=$(read_metric "$raw_file" '.metrics.bench_duplicate_count.values.count')
-  lock_busy_count=$(read_metric "$raw_file" '.metrics.bench_lock_busy_count.values.count')
-  mq_error_count=$(read_metric "$raw_file" '.metrics.bench_mq_error_count.values.count')
-  other_code_count=$(read_metric "$raw_file" '.metrics.bench_other_code_count.values.count')
-  non200_count=$(read_metric "$raw_file" '.metrics.bench_non_200_count.values.count')
-  http5xx_count=$(read_metric "$raw_file" '.metrics.bench_http_5xx_count.values.count')
+  success_count=$(read_metric "$raw_file" '.metrics.bench_success_count.count')
+  no_stock_count=$(read_metric "$raw_file" '.metrics.bench_no_stock_count.count')
+  duplicate_count=$(read_metric "$raw_file" '.metrics.bench_duplicate_count.count')
+  lock_busy_count=$(read_metric "$raw_file" '.metrics.bench_lock_busy_count.count')
+  mq_error_count=$(read_metric "$raw_file" '.metrics.bench_mq_error_count.count')
+  other_code_count=$(read_metric "$raw_file" '.metrics.bench_other_code_count.count')
+  non200_count=$(read_metric "$raw_file" '.metrics.bench_non_200_count.count')
+  http5xx_count=$(read_metric "$raw_file" '.metrics.bench_http_5xx_count.count')
 
   duplicate_users=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM (SELECT user_id FROM tb_voucher_order WHERE voucher_id=${voucher_id} GROUP BY user_id HAVING COUNT(*) > 1) t;")
   sold_count=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM tb_voucher_order WHERE voucher_id=${voucher_id};")
@@ -225,7 +241,10 @@ run_once() {
 calc_stats() {
   local group=$1
   local col=$2
-  mapfile -t arr < <(awk -F, -v g="$group" -v c="$col" 'NR>1 && $1==g {print $c}' "$DETAILS_CSV" | sort -n)
+  local arr=()
+  while IFS= read -r line; do
+    arr+=("$line")
+  done < <(awk -F, -v g="$group" -v c="$col" 'NR>1 && $1==g {print $c}' "$DETAILS_CSV" | sort -n)
 
   local n=${#arr[@]}
   if (( n == 0 )); then
@@ -251,7 +270,10 @@ calc_stats() {
 generate_summary() {
   echo "group,runs,tps_median,tps_q1,tps_q3,tps_min,tps_max,p95_median,p95_q1,p95_q3,p95_min,p95_max,error_rate_median,error_rate_q1,error_rate_q3,error_rate_max,duplicate_users_max,sold_count_median,db_write_tps_median,stable_target_met" > "$SUMMARY_CSV"
 
-  mapfile -t groups < <(awk -F, 'NR>1{print $1}' "$DETAILS_CSV" | sort -u)
+  local groups=()
+  while IFS= read -r g; do
+    groups+=("$g")
+  done < <(awk -F, 'NR>1{print $1}' "$DETAILS_CSV" | sort -u)
   for g in "${groups[@]}"; do
     runs=$(awk -F, -v g="$g" 'NR>1 && $1==g {cnt++} END{print cnt+0}' "$DETAILS_CSV")
 
@@ -307,9 +329,9 @@ run_counter=1
 ensure_topic_ready "order.created" 6
 ensure_topic_ready "$BENCH_TOPIC" 6
 
-# Stage 1: A/B/C/D each 5 runs, rotate execution order per run
+# Stage 1: A/B/C/D each N runs, rotate execution order per run
 variants=(A B C D)
-for run in 1 2 3 4 5; do
+for ((run=1; run<=STAGE1_RUNS; run++)); do
   offset=$((run - 1))
   for idx in 0 1 2 3; do
     variant=${variants[$(((idx + offset) % 4))]}
@@ -317,10 +339,10 @@ for run in 1 2 3 4 5; do
   done
 done
 
-# Stage 2: D capacity each rate 3 runs
-for rate in 3500 4500 5000 5500; do
+# Stage 2: D capacity each rate M runs
+for rate in ${STAGE2_RATES}; do
   group="D_${rate}"
-  for run in 1 2 3; do
+  for ((run=1; run<=STAGE2_RUNS; run++)); do
     run_once "stage2" "D" "$run" "$rate" "$group"
   done
 done

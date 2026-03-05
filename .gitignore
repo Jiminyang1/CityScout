@@ -39,6 +39,7 @@ build/
 
 # Benchmark outputs
 benchmarks/results/
+benchmarks/data/tokens.json
 
 # Ignore PDF files
 *.pdf

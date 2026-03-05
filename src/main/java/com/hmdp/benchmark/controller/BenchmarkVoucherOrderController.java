@@ -4,7 +4,6 @@ import com.hmdp.benchmark.dto.BenchmarkSeckillResponse;
 import com.hmdp.benchmark.service.BenchmarkSeckillStrategy;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.utils.UserHolder;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,8 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import javax.annotation.Resource;
 
 @RestController
-@RequestMapping("/api/benchmark/voucher-order")
-@ConditionalOnProperty(name = "benchmark.mode", havingValue = "true")
+@RequestMapping("/benchmark/voucher-order")
 public class BenchmarkVoucherOrderController {
 
     @Resource

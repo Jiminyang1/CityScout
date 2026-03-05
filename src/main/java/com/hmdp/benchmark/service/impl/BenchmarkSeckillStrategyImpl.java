@@ -24,7 +24,6 @@ import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class BenchmarkSeckillStrategyImpl implements BenchmarkSeckillStrategy {
@@ -127,10 +126,6 @@ public class BenchmarkSeckillStrategyImpl implements BenchmarkSeckillStrategy {
     @Override
     public BenchmarkSeckillResponse runC(Long voucherId, Long userId) {
         String requestId = UUID.randomUUID().toString();
-        BenchmarkSeckillResponse preCheck = preCheck(voucherId, "C", requestId);
-        if (preCheck != null) {
-            return preCheck;
-        }
 
         RLock lock = redissonClient.getLock("lock:" + userId + ":" + voucherId);
         boolean lockSuccess = lock.tryLock();
@@ -175,10 +170,6 @@ public class BenchmarkSeckillStrategyImpl implements BenchmarkSeckillStrategy {
     @Override
     public BenchmarkSeckillResponse runD(Long voucherId, Long userId) {
         String requestId = UUID.randomUUID().toString();
-        BenchmarkSeckillResponse preCheck = preCheck(voucherId, "D", requestId);
-        if (preCheck != null) {
-            return preCheck;
-        }
 
         RLock lock = redissonClient.getLock("lock:" + userId + ":" + voucherId);
         boolean lockSuccess = lock.tryLock();
@@ -216,7 +207,14 @@ public class BenchmarkSeckillStrategyImpl implements BenchmarkSeckillStrategy {
             try {
                 String key = userId + ":" + voucherId;
                 String payload = objectMapper.writeValueAsString(event);
-                kafkaTemplate.send(benchmarkKafkaTopic, key, payload).get(2, TimeUnit.SECONDS);
+                kafkaTemplate.send(benchmarkKafkaTopic, key, payload).addCallback(
+                        result -> {
+                        },
+                        ex -> {
+                            log.error("Benchmark D异步发送Kafka失败, orderId={}, voucherId={}, userId={}",
+                                    orderId, voucherId, userId, ex);
+                            compensateReservation(voucherId, userId);
+                        });
             } catch (Exception e) {
                 log.error("Benchmark D发送Kafka失败, orderId={}, voucherId={}, userId={}",
                         orderId, voucherId, userId, e);
