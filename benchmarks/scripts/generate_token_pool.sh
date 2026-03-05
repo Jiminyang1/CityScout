@@ -13,13 +13,23 @@ DB_PORT=${DB_PORT:-3306}
 DB_USER=${DB_USER:-root}
 DB_PASS=${DB_PASS:-123456}
 DB_NAME=${DB_NAME:-hmdp}
+MYSQL_CONTAINER=${MYSQL_CONTAINER:-hm-dianping-mysql}
 
 REDIS_HOST=${REDIS_HOST:-localhost}
 REDIS_PORT=${REDIS_PORT:-6379}
 LOGIN_TTL_SECONDS=${LOGIN_TTL_SECONDS:-2160000}
 
-MYSQL=(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME")
+MYSQL=()
 REDIS=(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT")
+
+if command -v mysql >/dev/null 2>&1; then
+  MYSQL=(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME")
+elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -q "^${MYSQL_CONTAINER}$"; then
+  MYSQL=(docker exec -i "$MYSQL_CONTAINER" mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME")
+else
+  echo "missing mysql client and mysql container (${MYSQL_CONTAINER}) not running"
+  exit 1
+fi
 
 mkdir -p "$DATA_DIR"
 
