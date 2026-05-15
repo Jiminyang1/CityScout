@@ -11,17 +11,18 @@ spring:
     url: jdbc:mysql://localhost:3306/hmdp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
     username: root
     password: 123456
-  redis:
-    host: localhost
-    port: 6379
-    lettuce:
-      pool:
-        max-active: 10
-        max-idle: 10
-        min-idle: 1
-        time-between-eviction-runs: 10s
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 10
+          min-idle: 1
+          time-between-eviction-runs: 10s
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: localhost:9094
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -60,6 +61,8 @@ app:
     fixed-delay-ms: 60000
     age-threshold-seconds: 90
     batch-size: 200
+    release-retry-fixed-delay-ms: 60000
+    release-retry-batch-size: 100
 
 payment:
   simulation:

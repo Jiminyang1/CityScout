@@ -8,6 +8,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -35,6 +36,7 @@ class BlogCommentsServiceImplTest {
         testBlogComment.setBlogId(1L);
         testBlogComment.setUserId(1L);
         testBlogComment.setContent("Test comment");
+        ReflectionTestUtils.setField(blogCommentsService, "baseMapper", blogCommentsMapper);
     }
 
     @Test
@@ -60,12 +62,12 @@ class BlogCommentsServiceImplTest {
     @Test
     void testRemoveByIds() {
         Collection<Long> ids = Arrays.asList(1L, 2L);
-        when(blogCommentsMapper.deleteBatchIds(ids)).thenReturn(2);
+        when(blogCommentsMapper.deleteByIds(ids)).thenReturn(2);
 
         boolean result = blogCommentsService.removeByIds(ids);
 
         assertTrue(result);
-        verify(blogCommentsMapper).deleteBatchIds(ids);
+        verify(blogCommentsMapper).deleteByIds(ids);
     }
 
     @Test
@@ -93,13 +95,13 @@ class BlogCommentsServiceImplTest {
     void testListByIds() {
         Collection<Long> ids = Arrays.asList(1L, 2L);
         List<BlogComments> expectedList = Arrays.asList(testBlogComment, new BlogComments());
-        when(blogCommentsMapper.selectBatchIds(ids)).thenReturn(expectedList);
+        when(blogCommentsMapper.selectByIds(ids)).thenReturn(expectedList);
 
         List<BlogComments> result = blogCommentsService.listByIds(ids);
 
         assertNotNull(result);
         assertEquals(2, result.size());
-        verify(blogCommentsMapper).selectBatchIds(ids);
+        verify(blogCommentsMapper).selectByIds(ids);
     }
 
     @Test
@@ -116,7 +118,7 @@ class BlogCommentsServiceImplTest {
 
     @Test
     void testCount() {
-        when(blogCommentsMapper.selectCount(any())).thenReturn(5);
+        when(blogCommentsMapper.selectCount(any())).thenReturn(5L);
 
         long result = blogCommentsService.count();
 

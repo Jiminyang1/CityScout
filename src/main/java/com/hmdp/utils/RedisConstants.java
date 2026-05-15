@@ -20,6 +20,8 @@ public class RedisConstants {
     public static final String SECKILL_ORDER_KEY = "seckill:order:";
     public static final String SECKILL_PENDING_KEY = "seckill:pending:";
     public static final String SECKILL_PENDING_INDEX_KEY = "seckill:pending:index";
+    public static final String SECKILL_DLT_FENCE_KEY = "seckill:dlt:fence:";
+    public static final Long SECKILL_DLT_FENCE_TTL = 30L;
 
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";

@@ -23,6 +23,7 @@ import org.springframework.data.redis.core.GeoOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.domain.geo.GeoReference;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -63,6 +64,7 @@ class ShopServiceImplTest {
         testShop = new Shop();
         testShop.setId(1L);
         testShop.setName("Test Shop");
+        ReflectionTestUtils.setField(shopService, "baseMapper", shopMapper);
     }
 
     @Test
@@ -224,7 +226,7 @@ class ShopServiceImplTest {
 
         assertFalse(result.getSuccess());
         assertEquals("商铺id不能为空", result.getErrorMsg());
-        verify(shopMapper, never()).updateById(any());
+        verify(shopMapper, never()).updateById(any(Shop.class));
         verify(stringRedisTemplate, never()).delete(anyString());
     }
 

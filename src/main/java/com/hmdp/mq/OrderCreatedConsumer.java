@@ -12,7 +12,7 @@ import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 
 @Component
 public class OrderCreatedConsumer {
@@ -31,8 +31,8 @@ public class OrderCreatedConsumer {
             containerFactory = "kafkaListenerContainerFactory")
     public void onOrderCreated(
             @Payload String payload,
-            @Header(KafkaHeaders.RECEIVED_MESSAGE_KEY) String key,
-            @Header(KafkaHeaders.RECEIVED_PARTITION_ID) int partition,
+            @Header(KafkaHeaders.RECEIVED_KEY) String key,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
             @Header(KafkaHeaders.OFFSET) long offset,
             Acknowledgment acknowledgment) {
         OrderCreatedEvent event;

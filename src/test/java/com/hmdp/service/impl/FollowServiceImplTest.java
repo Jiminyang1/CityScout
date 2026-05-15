@@ -109,7 +109,7 @@ class FollowServiceImplTest {
     @Test
     void testIsFollowed_True() {
         followService = spy(followService);
-        doReturn(1).when(followService).count(any());
+        doReturn(1L).when(followService).count(any());
 
         Result result = followService.isFollowed(2L);
 
@@ -121,7 +121,7 @@ class FollowServiceImplTest {
     @Test
     void testIsFollowed_False() {
         followService = spy(followService);
-        doReturn(0).when(followService).count(any());
+        doReturn(0L).when(followService).count(any());
 
         Result result = followService.isFollowed(2L);
 

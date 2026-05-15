@@ -27,7 +27,7 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -129,14 +129,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         try {
             String payload = objectMapper.writeValueAsString(event);
             kafkaTemplate.send(orderCreatedTopic, userId.toString(), payload)
-                    .addCallback(
-                            ok -> {
+                    .whenComplete(
+                            (ok, ex) -> {
+                                if (ex != null) {
+                                    log.warn("Kafka 投递失败, orderId={}, voucherId={}, userId={}，依赖 reconciler 兜底",
+                                            orderId, voucherId, userId, ex);
+                                    return;
+                                }
                                 if (log.isDebugEnabled()) {
                                     log.debug("Kafka 投递成功, orderId={}", orderId);
                                 }
-                            },
-                            ex -> log.warn("Kafka 投递失败, orderId={}, voucherId={}, userId={}，依赖 reconciler 兜底",
-                                    orderId, voucherId, userId, ex));
+                            });
         } catch (Exception e) {
             // 序列化等本地异常：消息没出去，pending 还在，reconciler 会重投
             log.error("Kafka 消息序列化或提交失败, orderId={}, voucherId={}, userId={}，依赖 reconciler 兜底",

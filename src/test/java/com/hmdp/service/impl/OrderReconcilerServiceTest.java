@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -63,6 +63,7 @@ class OrderReconcilerServiceTest {
         ReflectionTestUtils.setField(reconciler, "orderCreatedTopic", "order.created");
         ReflectionTestUtils.setField(reconciler, "ageThresholdSeconds", 90L);
         ReflectionTestUtils.setField(reconciler, "batchSize", 200);
+        ReflectionTestUtils.setField(reconciler, "releaseRetryBatchSize", 100);
         lenient().when(stringRedisTemplate.opsForZSet()).thenReturn(zSetOps);
         lenient().when(stringRedisTemplate.opsForHash()).thenReturn(hashOps);
     }
@@ -88,6 +89,15 @@ class OrderReconcilerServiceTest {
         reconciler.reconcile();
 
         verifyNoInteractions(voucherOrderMapper, orderFailedMapper, voucherOrderTxService, kafkaTemplate);
+    }
+
+    @Test
+    void retryRedisReleases_delegatesToTxService() {
+        when(voucherOrderTxService.retryPendingRedisReleases(100)).thenReturn(2);
+
+        reconciler.retryRedisReleases();
+
+        verify(voucherOrderTxService).retryPendingRedisReleases(100);
     }
 
     // ---------- 分支 1：DB 已存在 → CLEANUP ----------
@@ -144,6 +154,7 @@ class OrderReconcilerServiceTest {
         stubCandidates("1:5004");
         when(voucherOrderMapper.selectById(5004L)).thenReturn(null);
         when(orderFailedMapper.selectById(5004L)).thenReturn(null);
+        when(stringRedisTemplate.hasKey("seckill:dlt:fence:5004")).thenReturn(false);
 
         Map<Object, Object> pending = new HashMap<>();
         pending.put("userId", "9");
@@ -158,10 +169,24 @@ class OrderReconcilerServiceTest {
     }
 
     @Test
+    void reconcile_neitherExists_butDltFenceExists_skipsRepublish() {
+        stubCandidates("1:5009");
+        when(voucherOrderMapper.selectById(5009L)).thenReturn(null);
+        when(orderFailedMapper.selectById(5009L)).thenReturn(null);
+        when(stringRedisTemplate.hasKey("seckill:dlt:fence:5009")).thenReturn(true);
+
+        reconciler.reconcile();
+
+        verifyNoInteractions(kafkaTemplate, voucherOrderTxService);
+        verify(hashOps, never()).entries(anyString());
+    }
+
+    @Test
     void reconcile_neitherExists_butPendingMissing_skipsAndRemovesIndex() {
         stubCandidates("1:5005");
         when(voucherOrderMapper.selectById(5005L)).thenReturn(null);
         when(orderFailedMapper.selectById(5005L)).thenReturn(null);
+        when(stringRedisTemplate.hasKey("seckill:dlt:fence:5005")).thenReturn(false);
         when(hashOps.entries("seckill:pending:1:5005")).thenReturn(Collections.emptyMap());
 
         reconciler.reconcile();
@@ -175,6 +200,7 @@ class OrderReconcilerServiceTest {
         stubCandidates("1:5006");
         when(voucherOrderMapper.selectById(5006L)).thenReturn(null);
         when(orderFailedMapper.selectById(5006L)).thenReturn(null);
+        when(stringRedisTemplate.hasKey("seckill:dlt:fence:5006")).thenReturn(false);
 
         Map<Object, Object> pending = new HashMap<>();
         pending.put("requestId", "req-x");

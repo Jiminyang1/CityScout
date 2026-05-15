@@ -2,22 +2,19 @@ package com.hmdp;
 
 import com.hmdp.entity.Shop;
 import com.hmdp.service.IShopService;
-import io.lettuce.core.api.sync.RedisGeoCommands;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.Assert;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.test.context.junit4.SpringRunner;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-@RunWith(SpringRunner.class)
+@Disabled("Manual integration helper: requires local MySQL and Redis")
 @SpringBootTest
 public class HmDianPingApplicationTests {
 
@@ -32,7 +29,7 @@ public class HmDianPingApplicationTests {
         shopService.saveShopToRedis(1L, 1L);
         String key = "cache:shop:" + 1L;
         String value = stringRedisTemplate.opsForValue().get(key);
-        Assert.assertNotNull(value);
+        org.junit.jupiter.api.Assertions.assertNotNull(value);
     }
 
     @Test

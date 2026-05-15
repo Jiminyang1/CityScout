@@ -4,8 +4,8 @@ import com.hmdp.dto.UserDTO;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 public class LoginInterceptor implements HandlerInterceptor {
 
@@ -14,7 +14,7 @@ public class LoginInterceptor implements HandlerInterceptor {
         //1. 是否需要拦截, 从thredlocal中获取用户信息
         UserDTO userDTO = UserHolder.getUser();
         if (userDTO == null) {
-            response.setStatus(401, "Unauthorized");
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             return false;
         }
         //2. 有用户登录状态，放行

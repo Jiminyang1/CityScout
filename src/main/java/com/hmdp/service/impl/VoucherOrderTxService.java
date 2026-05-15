@@ -1,7 +1,11 @@
 package com.hmdp.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.hmdp.entity.OrderReleaseRetry;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.mapper.OrderFailedMapper;
+import com.hmdp.mapper.OrderReleaseRetryMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.utils.RedisConstants;
@@ -16,9 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.List;
 
 @Service
 public class VoucherOrderTxService {
@@ -26,15 +31,27 @@ public class VoucherOrderTxService {
     private static final Logger log = LoggerFactory.getLogger(VoucherOrderTxService.class);
 
     private static final DefaultRedisScript<Long> SECKILL_RELEASE_SCRIPT;
+    private static final DefaultRedisScript<Long> SECKILL_DUPLICATE_ACTIVE_RELEASE_SCRIPT;
 
     static {
         SECKILL_RELEASE_SCRIPT = new DefaultRedisScript<>();
         SECKILL_RELEASE_SCRIPT.setLocation(new ClassPathResource("seckill_release.lua"));
         SECKILL_RELEASE_SCRIPT.setResultType(Long.class);
+
+        SECKILL_DUPLICATE_ACTIVE_RELEASE_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_DUPLICATE_ACTIVE_RELEASE_SCRIPT.setLocation(
+                new ClassPathResource("seckill_duplicate_active_release.lua"));
+        SECKILL_DUPLICATE_ACTIVE_RELEASE_SCRIPT.setResultType(Long.class);
     }
 
     @Resource
     private VoucherOrderMapper voucherOrderMapper;
+
+    @Resource
+    private OrderFailedMapper orderFailedMapper;
+
+    @Resource
+    private OrderReleaseRetryMapper orderReleaseRetryMapper;
 
     @Resource
     private ISeckillVoucherService seckillVoucherService;
@@ -56,6 +73,12 @@ public class VoucherOrderTxService {
         Long userId = voucherOrder.getUserId();
         Long voucherId = voucherOrder.getVoucherId();
 
+        if (isDltFinalOrProcessing(orderId)) {
+            log.warn("订单已进入失败处理路径，跳过真实落库, orderId={}, userId={}, voucherId={}",
+                    orderId, userId, voucherId);
+            return;
+        }
+
         voucherOrder.setStatus(1);
 
         int inserted;
@@ -65,7 +88,11 @@ public class VoucherOrderTxService {
             // 幂等：orderId 重复 (重投) 或 user+voucher 唯一索引拦截 (重复订单)
             log.warn("订单已存在，幂等跳过, orderId={}, userId={}, voucherId={}",
                     orderId, userId, voucherId);
-            registerPendingCleanup(voucherId, orderId);
+            if (isActiveOrderDuplicate(duplicateKeyException, orderId, userId, voucherId)) {
+                registerDuplicateActiveCompensation(voucherId, userId, orderId);
+            } else {
+                registerPendingCleanup(voucherId, orderId);
+            }
             return;
         }
         if (inserted != 1) {
@@ -118,6 +145,7 @@ public class VoucherOrderTxService {
             throw new IllegalStateException("取消订单库存回补失败, orderId=" + orderId);
         }
 
+        createRedisReleaseRetry(order);
         registerRedisReleaseAfterCommit(order.getVoucherId(), order.getUserId(), orderId, true);
         log.info("未支付订单已取消，afterCommit 将释放 Redis 名额, orderId={}, userId={}, voucherId={}",
                 orderId, userId, order.getVoucherId());
@@ -125,8 +153,8 @@ public class VoucherOrderTxService {
     }
 
     public int expireUnpaidOrders(LocalDateTime expireBefore, int limit) {
-        java.util.List<VoucherOrder> orders = voucherOrderMapper.selectList(
-                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<VoucherOrder>()
+        List<VoucherOrder> orders = voucherOrderMapper.selectList(
+                new QueryWrapper<VoucherOrder>()
                         .eq("status", 1)
                         .le("create_time", expireBefore)
                         .orderByAsc("create_time")
@@ -138,6 +166,37 @@ public class VoucherOrderTxService {
             }
         }
         return expired;
+    }
+
+    public int retryPendingRedisReleases(int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 1000));
+        List<OrderReleaseRetry> rows = orderReleaseRetryMapper.selectList(
+                new QueryWrapper<OrderReleaseRetry>()
+                        .orderByAsc("update_time")
+                        .last("LIMIT " + safeLimit));
+
+        int released = 0;
+        for (OrderReleaseRetry row : rows) {
+            try {
+                VoucherOrder order = voucherOrderMapper.selectById(row.getOrderId());
+                if (!shouldRetryRedisRelease(row, order)) {
+                    orderReleaseRetryMapper.deleteById(row.getOrderId());
+                    continue;
+                }
+
+                releaseRedisReservation(row.getVoucherId(), row.getUserId(), row.getOrderId(), true);
+                orderReleaseRetryMapper.deleteById(row.getOrderId());
+                released++;
+            } catch (Exception e) {
+                try {
+                    recordRedisReleaseRetryFailure(row.getOrderId(), e);
+                } catch (Exception recordException) {
+                    log.warn("记录 Redis 释放重试失败信息失败, orderId={}", row.getOrderId(), recordException);
+                }
+                log.warn("重试释放 Redis 名额失败, orderId={}", row.getOrderId(), e);
+            }
+        }
+        return released;
     }
 
     /**
@@ -159,6 +218,23 @@ public class VoucherOrderTxService {
                 orderId.toString(),
                 forceUserRelease ? "1" : "0");
         log.info("释放 Redis 名额完成, orderId={}, userId={}, voucherId={}, result={}",
+                orderId, userId, voucherId, result);
+        return result;
+    }
+
+    public Long compensateDuplicateActiveOrder(Long voucherId, Long userId, Long orderId) {
+        String stockKey = RedisConstants.SECKILL_STOCK_KEY + voucherId;
+        String orderKey = RedisConstants.SECKILL_ORDER_KEY + voucherId;
+        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
+        String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
+
+        Long result = stringRedisTemplate.execute(
+                SECKILL_DUPLICATE_ACTIVE_RELEASE_SCRIPT,
+                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey),
+                userId.toString(),
+                voucherId.toString(),
+                orderId.toString());
+        log.info("重复活跃订单 Redis 补偿完成, orderId={}, userId={}, voucherId={}, result={}",
                 orderId, userId, voucherId, result);
         return result;
     }
@@ -193,6 +269,30 @@ public class VoucherOrderTxService {
     }
 
     /**
+     * DB 已有该用户的活跃订单时，本次 Lua 预扣需要还回 stock，但 user set 必须保留。
+     */
+    private void registerDuplicateActiveCompensation(Long voucherId, Long userId, Long orderId) {
+        Runnable compensation = () -> {
+            try {
+                compensateDuplicateActiveOrder(voucherId, userId, orderId);
+            } catch (Exception e) {
+                log.warn("重复活跃订单 Redis 补偿失败, orderId={}，reconciler 会兜底", orderId, e);
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    compensation.run();
+                }
+            });
+            return;
+        }
+        compensation.run();
+    }
+
+    /**
      * 取消订单 afterCommit：完整释放（user + stock + pending）。
      */
     private void registerRedisReleaseAfterCommit(Long voucherId, Long userId, Long orderId, boolean forceUserRelease) {
@@ -202,14 +302,16 @@ public class VoucherOrderTxService {
                 public void afterCommit() {
                     try {
                         releaseRedisReservation(voucherId, userId, orderId, forceUserRelease);
+                        clearRedisReleaseRetry(orderId);
                     } catch (Exception e) {
-                        log.warn("afterCommit 释放 Redis 名额失败, orderId={}，reconciler 会兜底", orderId, e);
+                        log.warn("afterCommit 释放 Redis 名额失败, orderId={}，release retry 会兜底", orderId, e);
                     }
                 }
             });
             return;
         }
         releaseRedisReservation(voucherId, userId, orderId, forceUserRelease);
+        clearRedisReleaseRetry(orderId);
     }
 
     private void triggerPaymentAfterCommit(Long orderId) {
@@ -223,5 +325,93 @@ public class VoucherOrderTxService {
             return;
         }
         paymentSimulationService.simulateThirdPartyPaymentAsync(orderId);
+    }
+
+    private boolean isActiveOrderDuplicate(DuplicateKeyException duplicateKeyException,
+                                           Long orderId,
+                                           Long userId,
+                                           Long voucherId) {
+        VoucherOrder existingById = voucherOrderMapper.selectById(orderId);
+        if (existingById != null) {
+            return false;
+        }
+
+        Long activeCount = voucherOrderMapper.selectCount(new QueryWrapper<VoucherOrder>()
+                .eq("user_id", userId)
+                .eq("voucher_id", voucherId)
+                .in("status", 1, 2, 3, 5)
+                .ne("id", orderId));
+        if (activeCount != null && activeCount > 0) {
+            return true;
+        }
+
+        return containsMessage(duplicateKeyException, "uk_user_voucher_active");
+    }
+
+    private void createRedisReleaseRetry(VoucherOrder order) {
+        OrderReleaseRetry retry = new OrderReleaseRetry()
+                .setOrderId(order.getId())
+                .setUserId(order.getUserId())
+                .setVoucherId(order.getVoucherId());
+        try {
+            orderReleaseRetryMapper.insert(retry);
+        } catch (DuplicateKeyException e) {
+            log.debug("Redis 释放重试记录已存在, orderId={}", order.getId());
+        }
+    }
+
+    private void clearRedisReleaseRetry(Long orderId) {
+        try {
+            orderReleaseRetryMapper.deleteById(orderId);
+        } catch (Exception e) {
+            log.warn("清理 Redis 释放重试记录失败, orderId={}，稍后会幂等重试", orderId, e);
+        }
+    }
+
+    private boolean shouldRetryRedisRelease(OrderReleaseRetry row, VoucherOrder order) {
+        if (order == null) {
+            return false;
+        }
+        if (!row.getUserId().equals(order.getUserId()) || !row.getVoucherId().equals(order.getVoucherId())) {
+            return false;
+        }
+        return Integer.valueOf(4).equals(order.getStatus()) || Integer.valueOf(6).equals(order.getStatus());
+    }
+
+    private boolean isDltFinalOrProcessing(Long orderId) {
+        if (orderFailedMapper.selectById(orderId) != null) {
+            return true;
+        }
+        return Boolean.TRUE.equals(stringRedisTemplate.hasKey(RedisConstants.SECKILL_DLT_FENCE_KEY + orderId));
+    }
+
+    private void recordRedisReleaseRetryFailure(Long orderId, Exception e) {
+        String message = e.getMessage();
+        if (message == null) {
+            message = e.getClass().getName();
+        }
+        if (message.length() > 500) {
+            message = message.substring(0, 500);
+        }
+
+        orderReleaseRetryMapper.update(
+                null,
+                new UpdateWrapper<OrderReleaseRetry>()
+                        .setSql("retry_count = retry_count + 1")
+                        .set("last_error", message)
+                        .set("update_time", LocalDateTime.now())
+                        .eq("order_id", orderId));
+    }
+
+    private boolean containsMessage(Throwable throwable, String needle) {
+        Throwable cursor = throwable;
+        while (cursor != null) {
+            String message = cursor.getMessage();
+            if (message != null && message.contains(needle)) {
+                return true;
+            }
+            cursor = cursor.getCause();
+        }
+        return false;
     }
 }

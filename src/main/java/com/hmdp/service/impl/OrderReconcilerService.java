@@ -13,7 +13,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.util.Map;
 import java.util.Set;
 
@@ -53,6 +53,9 @@ public class OrderReconcilerService {
     @Value("${app.reconciler.batch-size:200}")
     private int batchSize;
 
+    @Value("${app.reconciler.release-retry-batch-size:100}")
+    private int releaseRetryBatchSize;
+
     @Scheduled(fixedDelayString = "${app.reconciler.fixed-delay-ms:60000}")
     public void reconcile() {
         long now = System.currentTimeMillis();
@@ -67,6 +70,7 @@ public class OrderReconcilerService {
         int republish = 0;
         int cleanup = 0;
         int release = 0;
+        int fenced = 0;
         int skip = 0;
 
         for (String member : candidates) {
@@ -94,6 +98,7 @@ public class OrderReconcilerService {
                     case CLEANUP:    cleanup++;   break;
                     case RELEASE:    release++;   break;
                     case REPUBLISH:  republish++; break;
+                    case FENCED:     fenced++;    break;
                     case SKIP:       skip++;      break;
                 }
             } catch (Exception e) {
@@ -102,8 +107,16 @@ public class OrderReconcilerService {
             }
         }
 
-        log.info("reconciler 完成, scanned={}, republish={}, cleanup={}, release={}, skip={}",
-                candidates.size(), republish, cleanup, release, skip);
+        log.info("reconciler 完成, scanned={}, republish={}, cleanup={}, release={}, fenced={}, skip={}",
+                candidates.size(), republish, cleanup, release, fenced, skip);
+    }
+
+    @Scheduled(fixedDelayString = "${app.reconciler.release-retry-fixed-delay-ms:60000}")
+    public void retryRedisReleases() {
+        int released = voucherOrderTxService.retryPendingRedisReleases(releaseRetryBatchSize);
+        if (released > 0) {
+            log.info("Redis 名额释放重试完成, released={}", released);
+        }
     }
 
     private ReconcileOutcome handleOne(Long voucherId, Long orderId) {
@@ -129,7 +142,13 @@ public class OrderReconcilerService {
             return ReconcileOutcome.RELEASE;
         }
 
-        // 分支三：DB 没有 + failed 没有 → 重投 Kafka
+        // 分支三：DLT consumer 已经拿到死信但 failed 事务尚未提交，避免把失败订单重投复活
+        if (isDltFenced(orderId)) {
+            log.info("pending 已进入 DLT 处理窗口，跳过重投, voucherId={}, orderId={}", voucherId, orderId);
+            return ReconcileOutcome.FENCED;
+        }
+
+        // 分支四：DB 没有 + failed 没有 + DLT fence 没有 → 重投 Kafka
         String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
         Map<Object, Object> pending = stringRedisTemplate.opsForHash().entries(pendingKey);
         if (pending == null || pending.isEmpty()) {
@@ -156,8 +175,19 @@ public class OrderReconcilerService {
 
         try {
             String payload = objectMapper.writeValueAsString(event);
-            kafkaTemplate.send(orderCreatedTopic, userId.toString(), payload);
-            log.info("reconciler 重投, orderId={}, voucherId={}, userId={}",
+            var future = kafkaTemplate.send(orderCreatedTopic, userId.toString(), payload);
+            if (future != null) {
+                future.whenComplete((result, ex) -> {
+                    if (ex != null) {
+                        log.error("reconciler 重投真实失败, orderId={}, voucherId={}, userId={}",
+                                orderId, voucherId, userId, ex);
+                        return;
+                    }
+                    log.info("reconciler 重投已被 broker 接收, orderId={}, voucherId={}, userId={}",
+                            orderId, voucherId, userId);
+                });
+            }
+            log.info("reconciler 已提交重投请求, orderId={}, voucherId={}, userId={}",
                     orderId, voucherId, userId);
             return ReconcileOutcome.REPUBLISH;
         } catch (Exception e) {
@@ -187,7 +217,11 @@ public class OrderReconcilerService {
         return raw == null ? null : raw.toString();
     }
 
+    private boolean isDltFenced(Long orderId) {
+        return Boolean.TRUE.equals(stringRedisTemplate.hasKey(RedisConstants.SECKILL_DLT_FENCE_KEY + orderId));
+    }
+
     private enum ReconcileOutcome {
-        CLEANUP, RELEASE, REPUBLISH, SKIP
+        CLEANUP, RELEASE, REPUBLISH, FENCED, SKIP
     }
 }

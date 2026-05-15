@@ -100,6 +100,17 @@ CREATE TABLE IF NOT EXISTS tb_order_failed (
   KEY idx_user_voucher (user_id, voucher_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS tb_order_release_retry (
+  order_id BIGINT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  voucher_id BIGINT NOT NULL,
+  retry_count INT NOT NULL DEFAULT 0,
+  last_error VARCHAR(512) DEFAULT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_update_time (update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO tb_voucher (id, shop_id, title, sub_title, rules, pay_value, actual_value, type, status)
 VALUES
   (1, 1, 'CityScout Live 早鸟票', 'Kafka 异步下单演示券', '限同一用户购买一张，15 分钟内完成支付', 9900, 19900, 1, 1),

@@ -16,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -68,6 +69,7 @@ class BlogServiceImplTest {
         testUser.setIcon("test-icon.jpg");
 
         UserHolder.saveUser(testUserDTO);
+        ReflectionTestUtils.setField(blogService, "baseMapper", blogMapper);
         lenient().when(stringRedisTemplate.opsForZSet()).thenReturn(zSetOperations);
     }
 
@@ -198,7 +200,7 @@ class BlogServiceImplTest {
 
     @Test
     void testCount() {
-        when(blogMapper.selectCount(any())).thenReturn(5);
+        when(blogMapper.selectCount(any())).thenReturn(5L);
 
         long result = blogService.count();
 

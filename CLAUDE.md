@@ -39,8 +39,8 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 - **Producer** — `kafkaTemplate.send()` fire-and-forget（不调 `.get()`），失败不补偿，依赖 reconciler
 - **Consumer** — 幂等落库（INSERT + stock 扣减），失败抛异常 → Spring Kafka 重试 3 次 → DLT
 - **DLT Consumer** `OrderDltConsumer` — 落 `tb_order_failed` + 调用 release Lua 释放 Redis 名额
-- **Reconciler** `OrderReconcilerService` — 60s 定时扫描 pending index，三分支自愈（清理 / 释放 / 重投）
-- **取消** `cancelUnpaidOrder` — DB 事务内改状态 + 回补 stock，Redis 释放放在 `afterCommit` 同步器
+- **Reconciler** `OrderReconcilerService` — 60s 定时扫描 pending index，三分支自愈（清理 / 释放 / 重投），并重试 cancel release outbox
+- **取消** `cancelUnpaidOrder` — DB 事务内改状态 + 回补 stock + 写 `tb_order_release_retry`，Redis 释放放在 `afterCommit`，失败后定时重试
 - **OrderTimeoutService** — 定时扫描 15 分钟未支付订单，走取消流程
 
 ## 技术栈
@@ -65,6 +65,7 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 - `tb_seckill_voucher` — 秒杀库存，consumer 事务内扣减
 - `tb_voucher_order` — 订单生命周期，PK=orderId，唯一索引 `uk_user_voucher_active`（基于 `active_order_key` 生成列防一人多单）
 - `tb_order_failed` — DLT 处理后的终态失败订单，`queryOrder` 回退查询
+- `tb_order_release_retry` — 取消/退款后 Redis 名额释放的 retry outbox
 
 ## Kafka 配置
 
@@ -92,7 +93,7 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
 1. **Redis 是名额事实源**：Lua 通过即对用户做出名额承诺，不可撤销（除非 DLT 主动释放或用户取消）。
 2. **afterCommit 释放**：取消订单和 consumer 落库的 Redis 操作都放在 `TransactionSynchronizationManager.afterCommit`，避免事务回滚时 Redis 已经动手导致超卖。
 3. **Bootstrap SETNX**：启动时不覆盖 Redis 现有库存值。Redis 必须靠 AOF + 主从保证持久性。
-4. **唯一索引兜底**：`uk_user_voucher_active`（基于 `active_order_key` 生成列）是 consumer 端最后一道防线。Consumer 撞唯一索引 = 幂等跳过（不进 DLT）。
+4. **唯一索引兜底**：`uk_user_voucher_active`（基于 `active_order_key` 生成列）是 consumer 端最后一道防线。Consumer 撞同 orderId = 幂等清 pending；撞同用户同券活跃订单 = 还回本次 Lua 预扣的 Redis stock，但保留 user set。
 5. **DLT 触发条件**：消息处理 3 次失败 → DLT；唯一索引冲突算幂等不算失败。
 6. **Reconciler 假设单实例**：当前未加分布式锁。多实例部署需要加 ShedLock 或类似。
 

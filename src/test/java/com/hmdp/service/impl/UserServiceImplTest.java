@@ -20,6 +20,7 @@ import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Collections;
 import java.util.List;
@@ -65,6 +66,7 @@ class UserServiceImplTest {
         lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         lenient().when(stringRedisTemplate.opsForHash()).thenReturn(hashOperations);
         lenient().when(stringRedisTemplate.opsForSet()).thenReturn(setOperations);
+        ReflectionTestUtils.setField(userServiceImpl, "baseMapper", userMapper);
     }
 
     @AfterEach
