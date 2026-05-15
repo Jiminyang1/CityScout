@@ -1,9 +1,10 @@
 package com.hmdp.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
+import com.hmdp.utils.RedisConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
@@ -16,26 +17,20 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.annotation.Resource;
-import java.util.Collections;
+import java.time.LocalDateTime;
+import java.util.Arrays;
 
 @Service
 public class VoucherOrderTxService {
 
-    public enum OrderProcessResult {
-        SUCCESS,
-        DUPLICATE_ORDER,
-        NO_STOCK,
-        DB_ERROR
-    }
-
     private static final Logger log = LoggerFactory.getLogger(VoucherOrderTxService.class);
 
-    private static final DefaultRedisScript<Long> SECKILL_COMPENSATE_SCRIPT;
+    private static final DefaultRedisScript<Long> SECKILL_RELEASE_SCRIPT;
 
     static {
-        SECKILL_COMPENSATE_SCRIPT = new DefaultRedisScript<>();
-        SECKILL_COMPENSATE_SCRIPT.setLocation(new ClassPathResource("seckill_compensate.lua"));
-        SECKILL_COMPENSATE_SCRIPT.setResultType(Long.class);
+        SECKILL_RELEASE_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_RELEASE_SCRIPT.setLocation(new ClassPathResource("seckill_release.lua"));
+        SECKILL_RELEASE_SCRIPT.setResultType(Long.class);
     }
 
     @Resource
@@ -50,73 +45,171 @@ public class VoucherOrderTxService {
     @Resource
     private PaymentSimulationService paymentSimulationService;
 
+    /**
+     * Consumer 落库主流程：插订单 + 扣库存。
+     * 任一失败抛异常，Spring Kafka 走 retry → DLT。
+     * 成功后 afterCommit 清理 Redis pending。
+     */
     @Transactional
     public void handleRealOrderCreation(VoucherOrder voucherOrder) {
-        processOrder(voucherOrder, true, true);
-    }
+        Long orderId = voucherOrder.getId();
+        Long userId = voucherOrder.getUserId();
+        Long voucherId = voucherOrder.getVoucherId();
 
-    @Transactional
-    public OrderProcessResult processOrder(VoucherOrder voucherOrder,
-                                           boolean compensateRedisOnFailure,
-                                           boolean triggerPaymentAfterCommit) {
-        Integer count = voucherOrderMapper.selectCount(new QueryWrapper<VoucherOrder>()
-                .eq("user_id", voucherOrder.getUserId())
-                .eq("voucher_id", voucherOrder.getVoucherId()));
-        if (count != null && count > 0) {
-            log.warn("重复订单, userId={}, voucherId={}, orderId={}",
-                    voucherOrder.getUserId(), voucherOrder.getVoucherId(), voucherOrder.getId());
-            if (compensateRedisOnFailure) {
-                compensate(voucherOrder);
-            }
-            return OrderProcessResult.DUPLICATE_ORDER;
-        }
-
-        boolean success = seckillVoucherService.update()
-                .setSql("stock = stock - 1")
-                .eq("voucher_id", voucherOrder.getVoucherId())
-                .gt("stock", 0)
-                .update();
-        if (!success) {
-            log.warn("DB扣减失败，orderId={}", voucherOrder.getId());
-            if (compensateRedisOnFailure) {
-                compensate(voucherOrder);
-            }
-            return OrderProcessResult.NO_STOCK;
-        }
+        voucherOrder.setStatus(1);
 
         int inserted;
         try {
             inserted = voucherOrderMapper.insert(voucherOrder);
         } catch (DuplicateKeyException duplicateKeyException) {
-            log.warn("唯一索引拦截重复订单, userId={}, voucherId={}, orderId={}",
-                    voucherOrder.getUserId(), voucherOrder.getVoucherId(), voucherOrder.getId());
-            if (compensateRedisOnFailure) {
-                compensate(voucherOrder);
-            }
-            return OrderProcessResult.DUPLICATE_ORDER;
+            // 幂等：orderId 重复 (重投) 或 user+voucher 唯一索引拦截 (重复订单)
+            log.warn("订单已存在，幂等跳过, orderId={}, userId={}, voucherId={}",
+                    orderId, userId, voucherId);
+            registerPendingCleanup(voucherId, orderId);
+            return;
         }
-
         if (inserted != 1) {
-            log.error("订单写入失败，orderId={}", voucherOrder.getId());
-            if (compensateRedisOnFailure) {
-                compensate(voucherOrder);
-            }
-            return OrderProcessResult.DB_ERROR;
+            throw new IllegalStateException("订单写入异常, orderId=" + orderId);
         }
 
-        if (triggerPaymentAfterCommit) {
-            triggerPaymentAfterCommit(voucherOrder.getId());
+        boolean stockUpdated = seckillVoucherService.update()
+                .setSql("stock = stock - 1")
+                .eq("voucher_id", voucherId)
+                .gt("stock", 0)
+                .update();
+        if (!stockUpdated) {
+            // DB stock 已 0，但 Redis 还放行了 — 账本漂移，需要进 DLT 走释放分支
+            throw new IllegalStateException("DB stock 不足，orderId=" + orderId + ", voucherId=" + voucherId);
         }
-        return OrderProcessResult.SUCCESS;
+
+        registerPendingCleanup(voucherId, orderId);
+        triggerPaymentAfterCommit(orderId);
     }
 
-    private void compensate(VoucherOrder voucherOrder) {
+    /**
+     * 用户主动取消未支付订单。
+     * DB 改状态 + 回补 stock 在事务内，Redis 释放在 afterCommit。
+     */
+    @Transactional
+    public boolean cancelUnpaidOrder(Long orderId, Long userId) {
+        VoucherOrder order = voucherOrderMapper.selectById(orderId);
+        if (order == null || !userId.equals(order.getUserId())) {
+            return false;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        int updated = voucherOrderMapper.update(
+                null,
+                new UpdateWrapper<VoucherOrder>()
+                        .set("status", 4)
+                        .set("update_time", now)
+                        .eq("id", orderId)
+                        .eq("user_id", userId)
+                        .eq("status", 1));
+        if (updated != 1) {
+            return false;
+        }
+
+        boolean restored = seckillVoucherService.update()
+                .setSql("stock = stock + 1")
+                .eq("voucher_id", order.getVoucherId())
+                .update();
+        if (!restored) {
+            throw new IllegalStateException("取消订单库存回补失败, orderId=" + orderId);
+        }
+
+        registerRedisReleaseAfterCommit(order.getVoucherId(), order.getUserId(), orderId, true);
+        log.info("未支付订单已取消，afterCommit 将释放 Redis 名额, orderId={}, userId={}, voucherId={}",
+                orderId, userId, order.getVoucherId());
+        return true;
+    }
+
+    public int expireUnpaidOrders(LocalDateTime expireBefore, int limit) {
+        java.util.List<VoucherOrder> orders = voucherOrderMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<VoucherOrder>()
+                        .eq("status", 1)
+                        .le("create_time", expireBefore)
+                        .orderByAsc("create_time")
+                        .last("LIMIT " + limit));
+        int expired = 0;
+        for (VoucherOrder order : orders) {
+            if (cancelUnpaidOrder(order.getId(), order.getUserId())) {
+                expired++;
+            }
+        }
+        return expired;
+    }
+
+    /**
+     * DLT / Reconciler 调用：彻底释放 Redis 名额（用户从 set 移除、stock+1、pending 清理）。
+     * forceUserRelease=false：仅 pending 还在时才释放（DLT、reconciler 主用法）
+     * forceUserRelease=true：cancel 场景，pending 可能已被 consumer 清理但 user 还在 set
+     */
+    public Long releaseRedisReservation(Long voucherId, Long userId, Long orderId, boolean forceUserRelease) {
+        String stockKey = RedisConstants.SECKILL_STOCK_KEY + voucherId;
+        String orderKey = RedisConstants.SECKILL_ORDER_KEY + voucherId;
+        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
+        String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
+
         Long result = stringRedisTemplate.execute(
-                SECKILL_COMPENSATE_SCRIPT,
-                Collections.emptyList(),
-                voucherOrder.getVoucherId().toString(),
-                voucherOrder.getUserId().toString());
-        log.warn("补偿执行完成, orderId={}, result={}", voucherOrder.getId(), result);
+                SECKILL_RELEASE_SCRIPT,
+                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey),
+                userId.toString(),
+                voucherId.toString(),
+                orderId.toString(),
+                forceUserRelease ? "1" : "0");
+        log.info("释放 Redis 名额完成, orderId={}, userId={}, voucherId={}, result={}",
+                orderId, userId, voucherId, result);
+        return result;
+    }
+
+    /**
+     * Consumer 落库 afterCommit：仅清理 pending（user 名额保留给真实订单）。
+     */
+    private void registerPendingCleanup(Long voucherId, Long orderId) {
+        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
+        String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
+        String indexMember = voucherId + ":" + orderId;
+
+        Runnable cleanup = () -> {
+            try {
+                stringRedisTemplate.delete(pendingKey);
+                stringRedisTemplate.opsForZSet().remove(pendingIndexKey, indexMember);
+            } catch (Exception e) {
+                log.warn("清理 Redis pending 失败, orderId={}，reconciler 会兜底", orderId, e);
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    cleanup.run();
+                }
+            });
+            return;
+        }
+        cleanup.run();
+    }
+
+    /**
+     * 取消订单 afterCommit：完整释放（user + stock + pending）。
+     */
+    private void registerRedisReleaseAfterCommit(Long voucherId, Long userId, Long orderId, boolean forceUserRelease) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        releaseRedisReservation(voucherId, userId, orderId, forceUserRelease);
+                    } catch (Exception e) {
+                        log.warn("afterCommit 释放 Redis 名额失败, orderId={}，reconciler 会兜底", orderId, e);
+                    }
+                }
+            });
+            return;
+        }
+        releaseRedisReservation(voucherId, userId, orderId, forceUserRelease);
     }
 
     private void triggerPaymentAfterCommit(Long orderId) {

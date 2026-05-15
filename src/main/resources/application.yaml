@@ -27,8 +27,11 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: all
       retries: 3
+      buffer-memory: 67108864
       properties:
         enable.idempotence: true
+        max.block.ms: 1000
+        delivery.timeout.ms: 30000
     consumer:
       group-id: hmdp-order-group
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
@@ -47,11 +50,16 @@ app:
   kafka:
     topic:
       order-created: order.created
-
-benchmark:
-  mode: false
-  kafka:
-    topic: order.created.bench
+      order-created-dlt: order.created.DLT
+      partitions: 8
+  order:
+    unpaid-timeout-minutes: 15
+    timeout-scan-fixed-delay-ms: 30000
+    timeout-scan-limit: 100
+  reconciler:
+    fixed-delay-ms: 60000
+    age-threshold-seconds: 90
+    batch-size: 200
 
 payment:
   simulation:

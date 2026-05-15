@@ -38,6 +38,25 @@ public class PaymentSimulationService {
         PAYMENT_EXECUTOR.submit(() -> doSimulate(orderId));
     }
 
+    public boolean simulatePaymentSuccess(Long orderId, Long userId) {
+        LocalDateTime now = LocalDateTime.now();
+        int updated = voucherOrderMapper.update(
+                null,
+                new UpdateWrapper<VoucherOrder>()
+                        .set("status", 2)
+                        .set("pay_time", now)
+                        .set("update_time", now)
+                        .eq("id", orderId)
+                        .eq("user_id", userId)
+                        .eq("status", 1));
+        if (updated == 1) {
+            log.info("手动模拟支付成功, orderId={}, userId={}", orderId, userId);
+            return true;
+        }
+        log.warn("手动模拟支付跳过, orderId={}, userId={}", orderId, userId);
+        return false;
+    }
+
     private void doSimulate(Long orderId) {
         long delayMs = ThreadLocalRandom.current().nextLong(300L, 1801L);
         try {
@@ -59,6 +78,7 @@ public class PaymentSimulationService {
                 new UpdateWrapper<VoucherOrder>()
                         .set("status", 2)
                         .set("pay_time", LocalDateTime.now())
+                        .set("update_time", LocalDateTime.now())
                         .eq("id", orderId)
                         .eq("status", 1));
         if (updated == 1) {
