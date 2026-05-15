@@ -1,118 +1,179 @@
 # CityScout
 
-CityScout is an application for a discovery and review platform. It's built with Spring Boot and designed to handle features like user management, business listings, vouchers, and reviews.
-
-## About The Project
-
-This project provides the core backend functionalities for a platform where users can discover local businesses, read and write reviews, and potentially avail offers. Key features include user authentication, shop details, voucher systems, and more, with a focus on performance and scalability through caching and other strategies.
+CityScout is a local discovery and voucher demo app. The current focus is a high-concurrency seckill flow built around Redis pre-reservation, Kafka async order creation, MySQL final state, and scheduled reconciliation.
 
 ## Tech Stack
 
-- **Backend**: Java 8+, Spring Boot 2.7.x, MyBatis-Plus, Lombok
-- **Database**: MySQL 8.0
-- **Caching**: Redis 6.2
-- **Build Tool**: Maven
-- **Containerization**: Docker, Docker Compose
-- **Web Server (for static/frontend content via Docker)**: Nginx
+- Backend: Java 17, Spring Boot 3.5, Spring Kafka, MyBatis-Plus
+- Frontend: React 18, Vite, lucide-react
+- Storage: MySQL 8.0, Redis 6.2
+- Messaging: Kafka 3.9 in KRaft mode
+- Build and runtime: Maven, Docker, Docker Compose
+
+## Architecture Highlights
+
+The seckill order path is intentionally asynchronous:
+
+```text
+Frontend
+  -> POST /api/voucher-order/seckill/{voucherId}
+  -> Redis Lua reserves stock and writes pending
+  -> Kafka order.created
+  -> OrderCreatedConsumer writes MySQL order and DB stock
+  -> afterCommit clears Redis pending
+```
+
+Failure paths are handled by explicit recovery mechanisms:
+
+- Redis Lua writes `seckill:pending:{voucherId}:{orderId}` and `seckill:pending:index` so the reconciler can replay uncertain Kafka sends.
+- `DeadLetterPublishingRecoverer` writes `seckill:dlt:fence:{orderId}` before publishing to `order.created.DLT`.
+- `OrderDltConsumer` refreshes the fence, persists `tb_order_failed` transactionally, then releases Redis reservation in `afterCommit`.
+- `OrderReconcilerService` cleans stale pending rows, releases failed reservations, and republishes messages only when no DB order, failed row, or DLT fence exists.
+- Cancel and timeout release use `tb_order_release_retry` as a DB outbox so Redis release is retried after DB commit.
 
 ## Prerequisites
 
-- JDK 1.8 or higher
-- Maven 3.6+
-- Docker & Docker Compose (for containerized deployment)
-- MySQL Server (if running locally without Docker)
-- Redis Server (if running locally without Docker)
+- JDK 17
+- Maven 3.9+
+- Docker Desktop / Docker Compose v2
+- Node.js 20+ if running the frontend locally without Docker
 
-## Getting Started
+## Quick Start With Docker
 
-1.  **Clone the repository**:
+```bash
+docker compose up -d --build mysql redis kafka backend frontend
+```
 
-    ```bash
-    git clone <your-repository-url>
-    cd CityScout
-    ```
+Services:
 
-2.  **Database Setup (MySQL)**:
+- Frontend: `http://localhost:8080`
+- Backend: `http://localhost:8081`
+- MySQL: `localhost:3306`
+- Redis: `localhost:6379`
+- Kafka external listener: `localhost:9094`
 
-    - Ensure your MySQL server is running.
-    - Create a database named `hmdp`.
-    - Import `hmdp.sql` (found in the project root) into your `hmdp` database.
-      ```bash
-      # Example command (adjust username as needed)
-      mysql -u root -p hmdp < hmdp.sql
-      ```
-    - Update database credentials in `src/main/resources/application.yaml` if they differ from the defaults (`username: root`, `password: 123456`).
+Useful commands:
 
-3.  **Redis Setup**:
-    - Ensure your Redis server is running.
-    - If necessary, update Redis connection details in `src/main/resources/application.yaml` (defaults to `localhost:6379`, no password).
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose down
+```
 
-## How to Run
+### Reset Demo Data
 
-### 1. Locally via Spring Boot
+MySQL init scripts in `sql/` only run when the Docker volume is first created. If schema changes are added after a volume already exists, reset the demo environment:
 
-- Make sure your local MySQL and Redis are running and correctly configured in `application.yaml`.
-- From the project root, run:
-  ```bash
-  mvn clean install
-  mvn spring-boot:run
-  ```
-- The application will typically start on port `8081` (configurable in `application.yaml`).
+```bash
+docker compose down -v
+docker compose up -d --build mysql redis kafka backend frontend
+```
 
-### 2. Using Docker Compose
+This deletes demo MySQL, Redis, and Kafka data.
 
-- This will start the application, MySQL, Redis, and an Nginx server.
-- Ensure Docker and Docker Compose are running.
-- From the project root, run:
-  ```bash
-  docker-compose up -d
-  ```
-- **Services**:
+## Local Development
 
-  - **Application Backend**: Port `8081` (default).
-  - **MySQL**: Port `3306`.
-  - **Redis**: Port `6379`.
-  - **Frontend (Nginx)**: Port `8080`, serving files from `./nginx-1.18.0/html/hmdp/`.
+Start infrastructure only:
 
-- **Database Initialization (Docker)**:
-  The MySQL container will create the `hmdp` database. To import your schema and data:
+```bash
+docker compose up -d mysql redis kafka
+```
 
-  ```bash
-  docker exec -i hm-dianping-mysql mysql -uroot -p123456 hmdp < hmdp.sql
-  ```
+Run backend locally:
 
-  (Assumes `hm-dianping-mysql` is your MySQL container name and `123456` is the root password if `MYSQL_ROOT_PASSWORD` env var isn't set in `docker-compose.yml`.)
+```bash
+mvn spring-boot:run
+```
 
-- **To stop services**:
-  ```bash
-  docker-compose down
-  ```
+Run frontend locally:
 
-## Authentication
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-The backend uses SMS code login with a Redis-backed token session.
+The local backend config uses:
 
-- Flow: Request code ➜ Login with code ➜ Get token ➜ Send token in `authorization` header ➜ Interceptors validate and refresh TTL.
-- Token format: `<UUID>_<userId>` (example: `550e8400-e29b-41d4-a716-446655440000_12`).
-- Header name: `authorization`.
-- Redis keys:
-  - `login:code:<phone>`: 6-digit code, TTL 2 minutes.
-  - `login:token:<token>`: user hash (UserDTO), TTL 36000 minutes (~25 days), refreshed per request.
-- Endpoint prefix: all routes are served under `/api` (via `WebConfig`).
-- Public endpoints (no token): `/api/user/code`, `/api/user/login`, `/api/blog/hot`, `/api/shop/**`, `/api/shop-type/**`, `/api/voucher/**`, `/api/upload/**`.
+- MySQL: `jdbc:mysql://localhost:3306/hmdp`
+- Redis: `localhost:6379`
+- Kafka: `localhost:9094`
 
-![Authentication Flow](auth-flow.svg)
+Docker backend overrides these via environment variables in `docker-compose.yml`.
+
+## Database
+
+Main schema and seed data live in:
+
+- `sql/00_schema_seed.sql`
+- `sql/20260515_add_tb_order_release_retry.sql`
+
+Important tables:
+
+- `tb_voucher_order`: final order state
+- `tb_order_failed`: DLT failure terminal state
+- `tb_order_release_retry`: outbox for Redis reservation release after cancel/timeout
+- `tb_seckill_voucher`: DB-side voucher stock ledger
 
 ## API Examples
 
-- `POST /api/user/login` - User login (returns token)
-- `GET /api/shop/{id}` - Get shop details
-- `POST /api/voucher-order/seckill/{id}` - Secure a voucher via flash sale
+All backend routes are under `/api`.
 
-## Contributing
+```bash
+# request login code
+curl -X POST "http://localhost:8081/api/user/code?phone=13800000000"
 
-Contributions are welcome! Please submit Pull Requests or open Issues.
+# login, returns token
+curl -X POST "http://localhost:8081/api/user/login" \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"13800000000","code":"123456"}'
 
-## License
+# seckill order
+curl -X POST "http://localhost:8081/api/voucher-order/seckill/1" \
+  -H "authorization: <token>"
 
-(Specify your project's license here, e.g., MIT License, Apache 2.0 License, or leave blank if not specified.)
+# query order
+curl "http://localhost:8081/api/voucher-order/<orderId>" \
+  -H "authorization: <token>"
+```
+
+## Verification
+
+Backend checks:
+
+```bash
+zsh -lic 'mvn test -q'
+zsh -lic 'mvn -q -DskipTests package'
+git diff --check
+```
+
+Docker checks:
+
+```bash
+docker compose build backend
+docker compose up -d backend
+docker compose logs --since=2m backend
+```
+
+Expected startup signals include:
+
+- `Started HmDianPingApplication`
+- `Tomcat started on port 8081`
+- Kafka partition assignment for `order.created`
+- Kafka partition assignment for `order.created.DLT`
+
+Frontend checks:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+## Runtime Notes
+
+- Java runtime should be 17.
+- Spring Boot is 3.x, so code uses Jakarta package names.
+- Redis config uses `spring.data.redis.*`.
+- Kafka uses manual immediate ack and at-least-once delivery; idempotency is enforced with DB primary keys and unique indexes.
+- `guide.md` is a local deep-dive document and is intentionally ignored by git in this workspace.
