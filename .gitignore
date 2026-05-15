@@ -28,6 +28,8 @@ target/
 build/
 !**/src/main/**/build/
 !**/src/test/**/build/
+frontend/node_modules/
+frontend/dist/
 
 ### VS Code ###
 .vscode/
@@ -35,14 +37,16 @@ build/
 # Ignore SQL files
 *.sql
 !sql/*.sql
-!benchmarks/scripts/*.sql
-
-# Benchmark outputs
-benchmarks/results/
-benchmarks/data/tokens.json
 
 # Ignore PDF files
 *.pdf
 
 # macOS
 .DS_Store
+
+# Claude Code session config (local only)
+.claude/
+
+# Independent demo dirs unrelated to main project, keep local only
+interview-chain/
+seckill-demo/

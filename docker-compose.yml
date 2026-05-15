@@ -2,7 +2,6 @@ services:
   # MySQL 服务
   mysql:
     image: mysql:8.0
-    platform: linux/arm64/v8
     container_name: hm-dianping-mysql
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
@@ -11,7 +10,7 @@ services:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./hmdp.sql:/docker-entrypoint-initdb.d/hmdp.sql:ro
+      - ./sql:/docker-entrypoint-initdb.d:ro
     networks:
       - hm-dianping-network
     healthcheck:
@@ -23,7 +22,6 @@ services:
   # Redis 服务
   redis:
     image: redis:6.2-alpine
-    platform: linux/arm64/v8
     container_name: hm-dianping-redis
     command: redis-server
     ports:
@@ -41,7 +39,6 @@ services:
   # Kafka (KRaft, 单节点)
   kafka:
     image: apache/kafka:3.9.0
-    platform: linux/arm64/v8
     container_name: hm-dianping-kafka
     ports:
       - "9092:9092"
@@ -70,7 +67,7 @@ services:
       timeout: 10s
       retries: 10
 
-  # 后端服务（8 vCPU 对齐压测口径）
+  # 后端服务
   backend:
     build:
       context: .
@@ -85,15 +82,13 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/hmdp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/hmdp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8
       - SPRING_DATASOURCE_USERNAME=root
       - SPRING_DATASOURCE_PASSWORD=${MYSQL_ROOT_PASSWORD:-123456}
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - BENCHMARK_MODE=true
       - APP_KAFKA_TOPIC_ORDER_CREATED=order.created
-      - BENCHMARK_KAFKA_TOPIC=order.created.bench
       - PAYMENT_SIMULATION_ENABLED=false
     ports:
       - "8081:8081"
@@ -102,17 +97,18 @@ services:
 
   # 前端服务
   frontend:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     container_name: hm-dianping-frontend
+    depends_on:
+      - backend
     ports:
       - "8080:8080"
-    volumes:
-      - ./nginx-1.18.0/html/hmdp:/usr/share/nginx/html
-      - ./nginx-1.18.0/conf/nginx.conf:/etc/nginx/nginx.conf
     networks:
       - hm-dianping-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:8080"]
+      test: ["CMD", "wget", "--spider", "http://127.0.0.1:8080"]
       interval: 30s
       timeout: 10s
       retries: 3
