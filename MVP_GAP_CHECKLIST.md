@@ -2,7 +2,7 @@
 
 ## MVP implemented in this codebase
 
-- API path uses `Redisson (user+voucher lock) + Redis Lua + Kafka + MySQL`.
+- API path uses `Redis Lua + Kafka + MySQL` without a distributed lock in the seckill hot path.
 - Lua script atomically does: stock check, duplicate-user check, and stock reserve.
 - If Kafka publish fails after Lua success, compensation Lua rolls back Redis reservation.
 - Kafka consumer asynchronously persists orders with transactional service (`VoucherOrderTxService`).

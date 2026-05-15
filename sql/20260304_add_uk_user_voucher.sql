@@ -1,2 +1,3 @@
-ALTER TABLE tb_voucher_order
-ADD UNIQUE KEY uk_user_voucher (user_id, voucher_id);
+-- Legacy migration marker.
+-- The Docker demo schema now creates uk_user_voucher_active in 00_schema_seed.sql.
+SELECT 1;
