@@ -95,23 +95,18 @@ services:
     networks:
       - hm-dianping-network
 
-  # 前端服务
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: hm-dianping-frontend
+  # API Gateway / coarse IP rate limiting
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: hm-dianping-gateway
     depends_on:
       - backend
     ports:
       - "8080:8080"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - hm-dianping-network
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://127.0.0.1:8080"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 networks:
   hm-dianping-network:
