@@ -6,14 +6,12 @@
 
 target/
 build/
-
 frontend/node_modules/
 frontend/dist/
 
 benchmarks/
 interview-chain/
 seckill-demo/
-nginx-1.18.0/
 
 *.md
 *.svg
