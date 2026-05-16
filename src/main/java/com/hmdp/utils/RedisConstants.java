@@ -3,6 +3,11 @@ package com.hmdp.utils;
 public class RedisConstants {
     public static final String LOGIN_CODE_KEY = "login:code:";
     public static final Long LOGIN_CODE_TTL = 2L;
+    public static final String LOGIN_CODE_COOLDOWN_KEY = "login:code:cooldown:";
+    public static final String LOGIN_CODE_DAILY_KEY = "login:code:daily:";
+    public static final Long LOGIN_CODE_COOLDOWN_TTL_SECONDS = 60L;
+    public static final Long LOGIN_CODE_DAILY_TTL_DAYS = 2L;
+    public static final Long LOGIN_CODE_DAILY_LIMIT = 10L;
     public static final String LOGIN_USER_KEY = "login:token:";
     public static final Long LOGIN_USER_TTL = 30L;
 
@@ -17,6 +22,7 @@ public class RedisConstants {
     public static final Long LOCK_SHOP_TTL = 10L;
 
     public static final String SECKILL_STOCK_KEY = "seckill:stock:";
+    public static final String SECKILL_META_KEY = "seckill:meta:";
     public static final String SECKILL_ORDER_KEY = "seckill:order:";
     public static final String SECKILL_PENDING_KEY = "seckill:pending:";
     public static final String SECKILL_PENDING_INDEX_KEY = "seckill:pending:index";

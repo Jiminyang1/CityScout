@@ -21,6 +21,8 @@ import org.springframework.stereotype.Service;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpSession;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -47,11 +49,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Lazy
     private IUserService userService;
 
+    private static final DateTimeFormatter DAILY_KEY_DATE_FORMATTER = DateTimeFormatter.BASIC_ISO_DATE;
+
     @Override
     public Result sendCode(String phone, HttpSession session) {
         // 1. check phone number format
         if (RegexUtils.isPhoneInvalid(phone)) {
             return Result.fail("Invalid phone number");
+        }
+        Result rateLimitResult = checkLoginCodeRateLimit(phone);
+        if (rateLimitResult != null) {
+            return rateLimitResult;
         }
         // 2. generate code
         String code = RandomUtil.randomNumbers(6);
@@ -64,6 +72,51 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // TODO send code to phone
         log.debug("send code to phone: {}", code);
         return Result.ok();
+    }
+
+    private Result checkLoginCodeRateLimit(String phone) {
+        String cooldownKey = LOGIN_CODE_COOLDOWN_KEY + phone;
+        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(cooldownKey))) {
+            return Result.fail("验证码发送过于频繁，请稍后再试");
+        }
+
+        String dailyKey = LOGIN_CODE_DAILY_KEY + phone + ":" + LocalDate.now().format(DAILY_KEY_DATE_FORMATTER);
+        String dailyCountRaw = stringRedisTemplate.opsForValue().get(dailyKey);
+        long dailyCount = parseLongOrZero(dailyCountRaw);
+        if (dailyCount >= LOGIN_CODE_DAILY_LIMIT) {
+            return Result.fail("今日验证码发送次数已达上限");
+        }
+
+        Boolean cooldownSet = stringRedisTemplate.opsForValue().setIfAbsent(
+                cooldownKey,
+                "1",
+                LOGIN_CODE_COOLDOWN_TTL_SECONDS,
+                TimeUnit.SECONDS);
+        if (!Boolean.TRUE.equals(cooldownSet)) {
+            return Result.fail("验证码发送过于频繁，请稍后再试");
+        }
+
+        Long newDailyCount = stringRedisTemplate.opsForValue().increment(dailyKey);
+        if (newDailyCount != null && newDailyCount == 1L) {
+            stringRedisTemplate.expire(dailyKey, LOGIN_CODE_DAILY_TTL_DAYS, TimeUnit.DAYS);
+        }
+        if (newDailyCount != null && newDailyCount > LOGIN_CODE_DAILY_LIMIT) {
+            stringRedisTemplate.delete(cooldownKey);
+            return Result.fail("今日验证码发送次数已达上限");
+        }
+
+        return null;
+    }
+
+    private long parseLongOrZero(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
     }
 
     @Override

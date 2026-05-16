@@ -22,11 +22,19 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_COOLDOWN_KEY;
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_COOLDOWN_TTL_SECONDS;
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_DAILY_KEY;
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_DAILY_LIMIT;
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_DAILY_TTL_DAYS;
 import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
 import static com.hmdp.utils.RedisConstants.LOGIN_USER_KEY;
 import static org.junit.jupiter.api.Assertions.*;
@@ -66,6 +74,9 @@ class UserServiceImplTest {
         lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         lenient().when(stringRedisTemplate.opsForHash()).thenReturn(hashOperations);
         lenient().when(stringRedisTemplate.opsForSet()).thenReturn(setOperations);
+        lenient().when(stringRedisTemplate.hasKey(anyString())).thenReturn(false);
+        lenient().when(valueOperations.setIfAbsent(anyString(), anyString(), anyLong(), any(TimeUnit.class))).thenReturn(true);
+        lenient().when(valueOperations.increment(anyString())).thenReturn(1L);
         ReflectionTestUtils.setField(userServiceImpl, "baseMapper", userMapper);
     }
 
@@ -78,7 +89,50 @@ class UserServiceImplTest {
     void testSendCode_ValidPhone() {
         Result result = userServiceImpl.sendCode(TEST_PHONE, null);
         assertTrue(result.getSuccess());
+        verify(valueOperations).setIfAbsent(
+                eq(LOGIN_CODE_COOLDOWN_KEY + TEST_PHONE),
+                eq("1"),
+                eq(LOGIN_CODE_COOLDOWN_TTL_SECONDS),
+                eq(TimeUnit.SECONDS));
+        verify(valueOperations).increment(eq(dailyCodeKey(TEST_PHONE)));
+        verify(stringRedisTemplate).expire(eq(dailyCodeKey(TEST_PHONE)), eq(LOGIN_CODE_DAILY_TTL_DAYS), eq(TimeUnit.DAYS));
         verify(stringRedisTemplate.opsForValue()).set(eq(LOGIN_CODE_KEY + TEST_PHONE), anyString(), anyLong(), any());
+    }
+
+    @Test
+    void testSendCode_CooldownLimited() {
+        when(stringRedisTemplate.hasKey(LOGIN_CODE_COOLDOWN_KEY + TEST_PHONE)).thenReturn(true);
+
+        Result result = userServiceImpl.sendCode(TEST_PHONE, null);
+
+        assertFalse(result.getSuccess());
+        assertEquals("验证码发送过于频繁，请稍后再试", result.getErrorMsg());
+        verify(valueOperations, never()).set(eq(LOGIN_CODE_KEY + TEST_PHONE), anyString(), anyLong(), any());
+        verify(valueOperations, never()).increment(anyString());
+    }
+
+    @Test
+    void testSendCode_DailyLimited() {
+        when(valueOperations.get(dailyCodeKey(TEST_PHONE))).thenReturn(String.valueOf(LOGIN_CODE_DAILY_LIMIT));
+
+        Result result = userServiceImpl.sendCode(TEST_PHONE, null);
+
+        assertFalse(result.getSuccess());
+        assertEquals("今日验证码发送次数已达上限", result.getErrorMsg());
+        verify(valueOperations, never()).setIfAbsent(anyString(), anyString(), anyLong(), any(TimeUnit.class));
+        verify(valueOperations, never()).set(eq(LOGIN_CODE_KEY + TEST_PHONE), anyString(), anyLong(), any());
+    }
+
+    @Test
+    void testSendCode_DailyIncrementRaceLimited() {
+        when(valueOperations.increment(dailyCodeKey(TEST_PHONE))).thenReturn(LOGIN_CODE_DAILY_LIMIT + 1);
+
+        Result result = userServiceImpl.sendCode(TEST_PHONE, null);
+
+        assertFalse(result.getSuccess());
+        assertEquals("今日验证码发送次数已达上限", result.getErrorMsg());
+        verify(stringRedisTemplate).delete(LOGIN_CODE_COOLDOWN_KEY + TEST_PHONE);
+        verify(valueOperations, never()).set(eq(LOGIN_CODE_KEY + TEST_PHONE), anyString(), anyLong(), any());
     }
 
     @Test
@@ -252,5 +306,9 @@ class UserServiceImplTest {
 
         assertTrue(result.getSuccess());
         assertNull(result.getData());
+    }
+
+    private String dailyCodeKey(String phone) {
+        return LOGIN_CODE_DAILY_KEY + phone + ":" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
     }
 }

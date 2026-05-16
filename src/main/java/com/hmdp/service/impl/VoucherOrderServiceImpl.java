@@ -7,13 +7,11 @@ import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.dto.VoucherOrderStatusDTO;
 import com.hmdp.entity.OrderFailed;
-import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.OrderFailedMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.OrderCreatedEvent;
-import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.service.IVoucherService;
 import com.hmdp.utils.RedisConstants;
@@ -28,7 +26,6 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.Resource;
-import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -38,9 +35,6 @@ import java.util.stream.Collectors;
 @Slf4j
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder>
         implements IVoucherOrderService {
-
-    @Resource
-    private ISeckillVoucherService seckillVoucherService;
 
     @Resource
     private IVoucherService voucherService;
@@ -92,10 +86,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         String orderKey = RedisConstants.SECKILL_ORDER_KEY + voucherId;
         String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
         String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
+        String metaKey = RedisConstants.SECKILL_META_KEY + voucherId;
 
         Long luaFlag = stringRedisTemplate.execute(
                 SECKILL_SCRIPT,
-                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey),
+                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey, metaKey),
                 userId.toString(),
                 voucherId.toString(),
                 String.valueOf(orderId),
@@ -115,6 +110,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
         if (code == 3) {
             return Result.fail("系统暂未就绪，请稍后重试");
+        }
+        if (code == 4) {
+            return Result.fail("秒杀未开始");
+        }
+        if (code == 5) {
+            return Result.fail("秒杀已结束");
         }
         if (code != 0) {
             return Result.fail("下单失败");
@@ -151,16 +152,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Override
     public Result SeckillVoucher(Long voucherId) {
-        SeckillVoucher seckillVoucher = seckillVoucherService.getById(voucherId);
-        if (seckillVoucher == null) {
-            return Result.fail("秒杀券不存在");
-        }
-        if (seckillVoucher.getBeginTime().isAfter(LocalDateTime.now())) {
-            return Result.fail("秒杀未开始");
-        }
-        if (seckillVoucher.getEndTime().isBefore(LocalDateTime.now())) {
-            return Result.fail("秒杀已结束");
-        }
         return SeckillVoucherWithLua(voucherId);
     }
 
