@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CityScout 秒杀链路可视化</title>
+<style>
+:root {
+  --ink: #17201c;
+  --muted: #66736b;
+  --line: #d8e0d7;
+  --line-strong: #bdc9bf;
+  --paper: #fffdf8;
+  --field: #ffffff;
+  --green: #1f8a70;
+  --green-soft: #e8f6ef;
+  --blue: #2867c5;
+  --blue-soft: #edf4ff;
+  --amber: #b7791f;
+  --amber-soft: #fff4dd;
+  --red: #b94135;
+  --red-soft: #fff0ee;
+  --violet: #6552c6;
+  --shadow: 0 16px 36px rgba(39, 50, 44, 0.08);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background:
+    linear-gradient(90deg, rgba(23, 32, 28, 0.04) 1px, transparent 1px),
+    linear-gradient(rgba(23, 32, 28, 0.04) 1px, transparent 1px),
+    #f4f7f3;
+  background-size: 28px 28px;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+.app {
+  width: min(1440px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+/* ============ Top header ============ */
+.topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.eyebrow {
+  margin: 0 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+h1 {
+  margin: 0;
+  font-size: 26px;
+  letter-spacing: -0.015em;
+}
+.subtitle {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.tag-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ============ Scenario tabs ============ */
+.scenario-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.scenario-tabs button {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.scenario-tabs button:hover { border-color: var(--line-strong); background: var(--green-soft); }
+.scenario-tabs button.active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.scenario-tabs button .scenario-name {
+  font-weight: 600;
+}
+.scenario-tabs button .scenario-num {
+  margin-left: 6px;
+  opacity: 0.6;
+  font-size: 11px;
+}
+
+/* ============ Main grid (diagram + state) ============ */
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+  gap: 18px;
+  margin-bottom: 16px;
+}
+.panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.diagram-panel {
+  padding: 14px;
+  background:
+    linear-gradient(rgba(23, 32, 28, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 32, 28, 0.035) 1px, transparent 1px),
+    var(--field);
+  background-size: 20px 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  position: relative;
+}
+.diagram-svg { width: 100%; height: auto; max-height: 480px; display: block; }
+.state-panel {
+  padding: 18px 20px;
+  max-height: 510px;
+  overflow-y: auto;
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.panel-title svg { color: var(--muted); }
+
+/* ============ SVG nodes ============ */
+.node-rect {
+  fill: var(--paper);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  transition: all 0.3s ease;
+}
+.node-rect.active {
+  fill: var(--green-soft);
+  stroke: var(--green);
+  stroke-width: 2;
+  filter: drop-shadow(0 6px 14px rgba(31, 138, 112, 0.18));
+}
+.node-label {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--ink);
+}
+.node-sub {
+  font-size: 10.5px;
+  fill: var(--muted);
+}
+.node-icon-bg {
+  fill: var(--line);
+  transition: fill 0.3s ease;
+}
+.node-icon-bg.active { fill: var(--green); }
+.node-icon { fill: var(--ink); transition: fill 0.3s ease; }
+.node-icon.active { fill: var(--paper); }
+.edge {
+  stroke: var(--line);
+  stroke-width: 1;
+  fill: none;
+  stroke-dasharray: 4 4;
+  transition: all 0.3s ease;
+}
+.edge.active {
+  stroke: var(--green);
+  stroke-width: 2.4;
+  stroke-dasharray: 0;
+  animation: edge-glow 2s ease-in-out infinite;
+}
+.edge.active.failure { stroke: var(--red); }
+@keyframes edge-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.edge-pulse {
+  fill: var(--green);
+}
+.edge-pulse.failure { fill: var(--red); }
+
+.edge-annotation {
+  font-size: 11.5px;
+  font-weight: 600;
+  fill: var(--red);
+}
+.edge-annotation-bg {
+  fill: var(--red-soft);
+  stroke: var(--red);
+  stroke-width: 1;
+  rx: 8;
+}
+
+/* ============ State inspector ============ */
+.state-section { margin-bottom: 16px; }
+.state-section:last-child { margin-bottom: 0; }
+.state-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.state-section-head .badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--line);
+  color: var(--muted);
+}
+.state-section.redis .state-section-head .badge { background: #fde2e0; color: var(--red); }
+.state-section.mysql .state-section-head .badge { background: var(--blue-soft); color: var(--blue); }
+.state-section.kafka .state-section-head .badge { background: var(--amber-soft); color: var(--amber); }
+.state-row {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 10px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  margin-bottom: 2px;
+  transition: background 0.3s ease;
+}
+.state-row .k {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.state-row .v {
+  color: var(--ink);
+  word-break: break-all;
+}
+.state-row.highlight {
+  background: var(--green-soft);
+  border-left: 3px solid var(--green);
+  animation: flash 0.6s ease-out;
+}
+@keyframes flash {
+  0% { background: #ffe2a3; }
+  100% { background: var(--green-soft); }
+}
+
+/* ============ Explanation panel ============ */
+.explain-panel {
+  padding: 20px 22px;
+  margin-bottom: 14px;
+}
+.explain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.step-counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--green);
+  background: var(--green-soft);
+  border: 1px solid rgba(31, 138, 112, 0.25);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.step-title {
+  margin: 0 0 14px;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.explain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.explain-card {
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.explain-card h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.explain-card p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+.explain-card.code-card code {
+  font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  padding: 3px 8px;
+  border-radius: 5px;
+  word-break: break-all;
+  display: inline-block;
+  border: 1px solid rgba(40, 103, 197, 0.15);
+}
+
+/* ============ Controls ============ */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--green-soft);
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--green);
+  border-color: var(--green);
+}
+.progress {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+}
+.progress-bar {
+  flex: 1;
+  height: 7px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+.progress-bar span {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, var(--green), var(--blue));
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.progress-text {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  white-space: nowrap;
+}
+.speed-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.speed-selector select {
+  font-family: inherit;
+  font-size: 12.5px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* ============ Footer ============ */
+.footer {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.footer code {
+  font-family: "JetBrains Mono", monospace;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+@media (max-width: 980px) {
+  .main-grid { grid-template-columns: 1fr; }
+  .state-panel { max-height: 320px; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">CityScout Seckill · Architecture Walkthrough</div>
+      <h1>秒杀链路可视化演示</h1>
+      <span class="subtitle">交互式分步演示：Redis 预扣 / Kafka 异步 / DLT fence / Reconciler 自愈。配合 <code style="font-family:monospace; background:#fffdf8; padding:1px 5px; border:1px solid #d8e0d7; border-radius:3px;">guide.md</code> 食用。</span>
+    </div>
+    <div class="tag-row">
+      <span class="tag">Java 17 · Spring Boot 3</span>
+      <span class="tag">Redis 6.2 · Kafka 3.9 · MySQL 8</span>
+      <span class="tag">无依赖 / 双击即用</span>
+    </div>
+  </header>
+
+  <nav class="scenario-tabs" id="scenarioTabs"></nav>
+
+  <div class="main-grid">
+    <div class="diagram-panel">
+      <svg class="diagram-svg" id="diagram" viewBox="0 0 940 420" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#bdc9bf"></path>
+          </marker>
+          <marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f8a70"></path>
+          </marker>
+          <marker id="arrow-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#b94135"></path>
+          </marker>
+        </defs>
+        <g id="edges"></g>
+        <g id="nodes"></g>
+        <g id="annotation"></g>
+      </svg>
+    </div>
+    <aside class="panel state-panel">
+      <h3 class="panel-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
+        实时状态快照
+      </h3>
+      <div id="stateInspector"></div>
+    </aside>
+  </div>
+
+  <section class="panel explain-panel">
+    <div class="explain-head">
+      <span class="step-counter" id="stepCounter">STEP 1 / 1</span>
+    </div>
+    <h2 class="step-title" id="stepTitle">—</h2>
+    <div class="explain-grid">
+      <div class="explain-card">
+        <h4>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          做了什么
+        </h4>
+        <p id="explainWhat">—</p>
+      </div>
+      <div class="explain-card">
+        <h4>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          为什么这样设计
+        </h4>
+        <p id="explainWhy">—</p>
+      </div>
+      <div class="explain-card code-card">
+        <h4>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          代码位置
+        </h4>
+        <code id="explainCode">—</code>
+      </div>
+    </div>
+  </section>
+
+  <div class="panel controls">
+    <button class="btn" id="btnReset" title="重置到第一步">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/></svg>
+      重置
+    </button>
+    <button class="btn" id="btnPrev" title="上一步">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      上一步
+    </button>
+    <button class="btn primary" id="btnPlay" title="播放/暂停">
+      <span id="playIcon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></svg>
+      </span>
+      <span id="playLabel">播放</span>
+    </button>
+    <button class="btn" id="btnNext" title="下一步">
+      下一步
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+
+    <div class="progress">
+      <div class="progress-bar"><span id="progressFill"></span></div>
+      <span class="progress-text" id="progressText">0 / 0</span>
+    </div>
+
+    <div class="speed-selector">
+      <label for="speedSelect">速度</label>
+      <select id="speedSelect">
+        <option value="4000">0.5×</option>
+        <option value="2000" selected>1×</option>
+        <option value="1000">2×</option>
+        <option value="500">4×</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="footer">
+    每个步骤的 <code>做了什么 / 为什么</code> 都对应 <code>guide.md</code> 同名章节。在线源代码: <code>scripts/smoke_test.sh</code>、<code>scripts/press_test.sh</code>
+  </div>
+</div>
+
+<script>
+/* ==================================================================
+   节点定义
+   ================================================================== */
+const NODES = [
+  { id: "client",     label: "Client",     sub: "React 前端",                x: 10,  y: 40,  icon: "users" },
+  { id: "gateway",    label: "Gateway",    sub: "nginx · 分级限流",          x: 190, y: 40,  icon: "shield" },
+  { id: "api",        label: "API / Lua",  sub: "VoucherOrderServiceImpl",   x: 370, y: 40,  icon: "server" },
+  { id: "redis",      label: "Redis",      sub: "stock / pending / fence",   x: 555, y: 40,  icon: "zap" },
+  { id: "kafka",      label: "Kafka",      sub: "order.created / .DLT",      x: 770, y: 40,  icon: "radio" },
+  { id: "reconciler", label: "Reconciler", sub: "@Scheduled 60s",            x: 10,  y: 280, icon: "refresh" },
+  { id: "payment",    label: "Payment",    sub: "PaymentSimulation",         x: 190, y: 280, icon: "activity" },
+  { id: "mysql",      label: "MySQL",      sub: "order / failed / retry",    x: 555, y: 280, icon: "database" },
+  { id: "consumer",   label: "Consumer",   sub: "OrderCreated / Dlt",        x: 770, y: 280, icon: "cpu" },
+];
+const NODE_BY_ID = Object.fromEntries(NODES.map(n => [n.id, n]));
+const NODE_W = 156;
+const NODE_H = 76;
+
+/* Icon SVG paths (lucide-style, simplified) */
+const ICONS = {
+  users:    `<circle cx="9" cy="9" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 11a3 3 0 1 0 0-6"/><path d="M21 21v-2a4 4 0 0 0-3-3.85"/>`,
+  shield:   `<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>`,
+  server:   `<rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><line x1="7" y1="7" x2="7.01" y2="7"/><line x1="7" y1="17" x2="7.01" y2="17"/>`,
+  zap:      `<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/>`,
+  radio:    `<circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/>`,
+  refresh:  `<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>`,
+  activity: `<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>`,
+  database: `<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>`,
+  cpu:      `<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="14" x2="22" y2="14"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="14" x2="4" y2="14"/>`,
+};
+
+/* ==================================================================
+   场景数据
+   ================================================================== */
+const INITIAL_STATE = {
+  redis: {
+    "seckill:meta:1": "{ beginTs:1715000000, endTs:1717592000 }",
+    "seckill:stock:1": 100,
+    "seckill:order:1": "{ }",
+    "seckill:pending:1:42": "∅",
+    "seckill:pending:index": "[ ]",
+    "seckill:dlt:fence:42": "∅",
+  },
+  mysql: {
+    "tb_voucher_order": "[ ]",
+    "tb_seckill_voucher.stock": 100,
+    "tb_order_failed": "[ ]",
+    "tb_order_release_retry": "[ ]",
+  },
+  kafka: {
+    "order.created": "[ 0 msg ]",
+    "order.created.DLT": "[ 0 msg ]",
+  },
+};
+
+const HAPPY_PATH = {
+  id: "happy",
+  name: "Happy Path",
+  description: "完整正常下单链路（12 步）",
+  initialState: INITIAL_STATE,
+  steps: [
+    {
+      title: "用户点击 \"抢券\"",
+      activeNodes: ["client"],
+      activeEdges: [],
+      what: "前端 POST /api/voucher-order/seckill/1，HTTP header 带 authorization token。",
+      why: "所有受保护请求都通过 token 鉴权，token 在 RefreshTokenInterceptor 里转成 UserHolder（ThreadLocal）供后续业务读取。",
+      code: "frontend/src/api.js · api.seckill()",
+    },
+    {
+      title: "Gateway · nginx 分级限流",
+      activeNodes: ["client", "gateway"],
+      activeEdges: [["client", "gateway"]],
+      what: "请求先到 nginx gateway。`/api/voucher-order/` 路径走专用限流区 (10 req/s + burst 30)，超出立即返回 429。通过后 proxy_pass 转发到 backend:8081，附加 X-Real-IP / X-Forwarded-For。",
+      why: "把限流放在 Java 之前是关键：恶意 IP / 脚本刷单 / 用户狂点都在 nginx 层就被截，不消耗 Tomcat 线程、不消耗 Redis Lua、不消耗 DB 连接。每个端点单独限流策略（code 5/min · login 10/min · seckill 10/s · 通用 60/s）按业务风险分级。",
+      code: "gateway/nginx.conf",
+    },
+    {
+      title: "Spring 拦截 + 鉴权",
+      activeNodes: ["gateway", "api"],
+      activeEdges: [["gateway", "api"]],
+      what: "进入 VoucherOrderController.seckillVoucher。LoginInterceptor / RefreshTokenInterceptor 校验 token、把 UserDTO 放进 ThreadLocal。**不查 DB**，时间窗校验下沉到 Lua。",
+      why: "Bootstrap 启动时已经把 begin/end 写进 Redis 的 seckill:meta:{voucherId}。Lua 在 hot path 内一并校验，省掉每次请求一次 DB PK 查询（10000 QPS 时省 1w 次/秒 DB 连接）。",
+      code: "VoucherOrderServiceImpl.SeckillVoucher · SeckillStockBootstrap.writeMeta",
+    },
+    {
+      title: "生成 orderId + requestId",
+      activeNodes: ["api"],
+      activeEdges: [],
+      what: "redisIdWorker.nextId(\"order\") 生成 snowflake 风格 orderId=42；UUID 生成 requestId=abc-…",
+      why: "orderId 是业务唯一标识（PK），requestId 是消息层去重 key。两者分层。orderId 提前生成是为兼容非秒杀订单。",
+      code: "VoucherOrderServiceImpl.SeckillVoucherWithLua",
+    },
+    {
+      title: "Lua 原子执行 ⭐ (5 KEYS + 7 步)",
+      activeNodes: ["api", "redis"],
+      activeEdges: [["api", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:stock:1": 99,
+          "seckill:order:1": "{ userId=7 }",
+          "seckill:pending:1:42": "{ userId:7, requestId:abc-… }",
+          "seckill:pending:index": "[ (1:42, 1715000000000) ]",
+        },
+      },
+      what: "5 KEYS（stock/order/pending/index/**meta**）+ Redis 单线程内顺序执行 7 件事：① HGET meta.beginTs/endTs ② 校验 now ≥ beginTs（否则 return 4） ③ 校验 now ≤ endTs（否则 return 5） ④ 校验 stock>0（否则 return 1） ⑤ 校验 user 不在 set（否则 return 2） ⑥ DECR stock + SADD user ⑦ HSET pending + ZADD index。",
+      why: "Redis 单线程在 EVAL 期间不切走，所有命令天然原子。时间窗校验在 Lua 内完成，**零 DB 查询**进入热路径。pending Hash 是 Redis 侧 outbox 凭证，给后续 reconciler 兜底用。返回码 3/4/5 让前端精确区分'未就绪/未开始/已结束'。",
+      code: "src/main/resources/seckill.lua",
+    },
+    {
+      title: "Kafka fire-and-forget 异步发送",
+      activeNodes: ["api", "kafka"],
+      activeEdges: [["api", "kafka"]],
+      stateChange: {
+        kafka: {
+          "order.created": "[ {orderId:42, userId:7, voucherId:1, requestId:abc-…} ]",
+        },
+      },
+      what: "kafkaTemplate.send(topic, key=userId, payload) 不调 .get()，立即返回。失败由 whenComplete 回调写日志。",
+      why: "key=userId 让同用户消息进同一 partition（串行）；不阻塞 controller，5ms 内返回 orderId。失败由 pending + reconciler 兜底。",
+      code: "VoucherOrderServiceImpl.SeckillVoucherWithLua",
+    },
+    {
+      title: "Controller 立即返回 orderId",
+      activeNodes: ["api", "gateway", "client"],
+      activeEdges: [["api", "gateway"], ["gateway", "client"]],
+      what: "Result.ok(orderId=42) 沿 api → gateway → client 返回前端。整段（gateway + Lua + Kafka send）约 5-8ms。",
+      why: "用户感受到的是同步响应，实际后端是异步链路。前端拿到 orderId 后开始轮询订单状态。",
+      code: "VoucherOrderServiceImpl L147",
+    },
+    {
+      title: "前端开始轮询 queryOrder",
+      activeNodes: ["client"],
+      activeEdges: [],
+      what: "前端 setInterval 每 1.8s 调 queryOrder(42)。此时 DB 还没订单 → 返回 status=0 \"创建中\"。",
+      why: "异步落库意味着 orderId 拿到时不一定已在 DB。前端轮询 + 60s 硬超时机制等结果。",
+      code: "frontend polling effect",
+    },
+    {
+      title: "Consumer 从 Kafka 拉取消息",
+      activeNodes: ["kafka", "consumer"],
+      activeEdges: [["kafka", "consumer"]],
+      what: "OrderCreatedConsumer 按 partition 拉取消息。同一 userId 进同一 partition，partition 内单线程串行。",
+      why: "concurrency=8 = 8 partition 并行，但同用户消息严格有序，避免下单 / 取消 / 退款乱序导致状态机错乱。",
+      code: "OrderCreatedConsumer.onOrderCreated",
+    },
+    {
+      title: "Consumer @Transactional 落库",
+      activeNodes: ["consumer", "mysql"],
+      activeEdges: [["consumer", "mysql"]],
+      stateChange: {
+        mysql: {
+          "tb_voucher_order": "[ {id:42, user_id:7, voucher_id:1, status:1} ]",
+          "tb_seckill_voucher.stock": 99,
+        },
+      },
+      what: "事务内：先 INSERT order(status=1) → 再 UPDATE tb_seckill_voucher SET stock=stock-1 WHERE stock>0。任一失败抛异常 → 重试 → DLT。",
+      why: "先 INSERT 拿 PK 锁，早暴露唯一索引冲突；UPDATE WHERE stock>0 防止超卖（即使 Redis 漏判 DB 也兜得住）。",
+      code: "VoucherOrderTxService.handleRealOrderCreation",
+    },
+    {
+      title: "afterCommit 清理 pending",
+      activeNodes: ["consumer", "redis"],
+      activeEdges: [["consumer", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:pending:1:42": "∅",
+          "seckill:pending:index": "[ ]",
+        },
+      },
+      what: "事务 commit 成功 → afterCommit 同步器触发 → DEL pending Hash + ZREM index member。",
+      why: "放 afterCommit 而非事务内：commit 失败时 Redis 不动，pending 留着让 reconciler 兜底。事务内调 Redis 在回滚时会乱。",
+      code: "VoucherOrderTxService.registerPendingCleanup",
+    },
+    {
+      title: "afterCommit 触发支付模拟",
+      activeNodes: ["consumer", "payment"],
+      activeEdges: [["consumer", "payment"]],
+      what: "triggerPaymentAfterCommit 注册另一个 afterCommit 回调，commit 后调 PaymentSimulationService.simulateThirdPartyPaymentAsync(orderId)。",
+      why: "支付必须等订单真实落库后才能动。同样用 afterCommit 防止事务回滚时支付已扣。",
+      code: "VoucherOrderTxService.triggerPaymentAfterCommit",
+    },
+    {
+      title: "前端轮询拿到 status=1",
+      activeNodes: ["client", "gateway", "api", "mysql"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"], ["api", "mysql"]],
+      what: "前端下一轮 queryOrder(42) 走 gateway 限流（通用 60/s 配额）→ DB SELECT 拿到 status=1 → 展示\"未支付\"按钮（模拟支付 / 取消）。",
+      why: "DB 是订单状态事实源，前端最终视图由 DB 决定。Redis 状态对用户透明。轮询也走 gateway，但走通用配额（60/s），不挤占 seckill 配额。",
+      code: "VoucherOrderServiceImpl.queryOrder",
+    },
+  ],
+};
+
+const KAFKA_OUTAGE = {
+  id: "kafka-outage",
+  name: "Kafka 抖动",
+  description: "Kafka 不可用时 reconciler 90s 后兜底（9 步）",
+  initialState: INITIAL_STATE,
+  steps: [
+    {
+      title: "用户抢券 → Lua 通过",
+      activeNodes: ["client", "gateway", "api", "redis"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"], ["api", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:stock:1": 99,
+          "seckill:order:1": "{ userId=7 }",
+          "seckill:pending:1:42": "{ userId:7, requestId:abc-… }",
+          "seckill:pending:index": "[ (1:42, 1715000000000) ]",
+        },
+      },
+      what: "Lua 7 件事原子完成（meta 时间窗 ✓ / stock ✓ / dedupe ✓ / DECR + SADD + pending）。Redis 已经'承诺名额'给 user 7。",
+      why: "无论后续 Kafka 是否成功，Redis 都不会撤销名额。这是设计原则：Lua 通过即承诺。",
+      code: "seckill.lua",
+    },
+    {
+      title: "❌ Kafka send 失败",
+      activeNodes: ["api", "kafka"],
+      activeEdges: [["api", "kafka"]],
+      edgeAnnotation: "❌ broker unreachable",
+      what: "kafkaTemplate.send 内部 retry 3 次仍失败 → whenComplete callback 拿到 TimeoutException → log.warn。",
+      why: "fire-and-forget 意味着 controller 已经返回 orderId 给用户了，这里只能 log，不撤销 Redis 名额。",
+      code: "VoucherOrderServiceImpl whenComplete callback",
+    },
+    {
+      title: "用户拿到 orderId 但 DB 没订单",
+      activeNodes: ["client"],
+      activeEdges: [],
+      what: "前端开始轮询 queryOrder(42)。DB 无订单、failed 表无记录、fence 无 → 持续返回 status=0 \"创建中\"。",
+      why: "60s 硬超时窗口内，前端持续 1.8s 一轮。超时后展示\"请稍后查看订单列表\"。",
+      code: "frontend polling",
+    },
+    {
+      title: "T=60s · reconciler 第一次扫描（跳过）",
+      activeNodes: [],
+      activeEdges: [],
+      what: "Reconciler 每 60s 跑一次，age 阈值 90s。第 60s 扫到 pending entry，age=60s < 90s → 跳过。",
+      why: "阈值 90s 是为了不打扰 happy path（一般 1-3s 落库），但不能太晚让用户感知。",
+      code: "OrderReconcilerService.reconcile",
+    },
+    {
+      title: "T=120s · reconciler 扫到此 pending",
+      activeNodes: ["reconciler", "redis"],
+      activeEdges: [["reconciler", "redis"]],
+      what: "ZRANGEBYSCORE pending:index 0 (now - 90s) 返回 ['1:42']。Age=120s 满足阈值。",
+      why: "ZSET 范围查询 O(log N)，按 createTs 排序天然适合 age-based 扫描。",
+      code: "OrderReconcilerService.reconcile L67",
+    },
+    {
+      title: "三分支决策：走 REPUBLISH",
+      activeNodes: ["reconciler"],
+      activeEdges: [],
+      what: "查 DB → 无订单；查 failed 表 → 无记录；查 fence → 无 → 走第四分支 REPUBLISH。",
+      why: "DB / failed / fence 都没有，说明消息没成功投递到 Kafka 或被消费。从 pending Hash 重建消息体重投。",
+      code: "OrderReconcilerService.handleOne",
+    },
+    {
+      title: "Reconciler 重投 Kafka",
+      activeNodes: ["reconciler", "kafka"],
+      activeEdges: [["reconciler", "kafka"]],
+      stateChange: {
+        kafka: {
+          "order.created": "[ {orderId:42, …, source:reconciler-republish} ]",
+        },
+      },
+      what: "kafkaTemplate.send(topic, userId=7, 从 pending 重建的 OrderCreatedEvent)。保留原 orderId 和 requestId。",
+      why: "保留原 orderId 让 consumer 端的 PK 幂等天然生效——即使原始消息真到了 broker 也只会被处理一次。",
+      code: "OrderReconcilerService.handleOne L160",
+    },
+    {
+      title: "Consumer 处理重投消息",
+      activeNodes: ["kafka", "consumer", "mysql"],
+      activeEdges: [["kafka", "consumer"], ["consumer", "mysql"]],
+      stateChange: {
+        mysql: {
+          "tb_voucher_order": "[ {id:42, status:1} ]",
+          "tb_seckill_voucher.stock": 99,
+        },
+        redis: {
+          "seckill:pending:1:42": "∅",
+          "seckill:pending:index": "[ ]",
+        },
+      },
+      what: "INSERT order ✓ + UPDATE stock ✓ + commit + afterCommit DEL pending。",
+      why: "重投消息和原始 happy path 走完全相同的代码路径。reconciler 是补救层，不是新业务路径。",
+      code: "VoucherOrderTxService.handleRealOrderCreation",
+    },
+    {
+      title: "前端在 ~121s 拿到 status=1",
+      activeNodes: ["client", "mysql"],
+      activeEdges: [["client", "mysql"]],
+      what: "用户经历约 2 分钟\"创建中\"后，订单终于落库。前端展示\"未支付\"。",
+      why: "代价是延迟，但不超卖、不丢单。延迟敏感的业务可以调小 reconciler 间隔 / 阈值。",
+      code: "frontend polling logic",
+    },
+  ],
+};
+
+const DLT_RACE = {
+  id: "dlt-race",
+  name: "DLT + Fence 防 Race ⭐",
+  description: "Consumer 持续失败 → DLT；fence 拦住竞态窗口（14 步）",
+  initialState: {
+    ...INITIAL_STATE,
+    mysql: { ...INITIAL_STATE.mysql, "tb_seckill_voucher.stock": 0 },
+  },
+  steps: [
+    {
+      title: "异常初始：Redis 100, DB stock=0",
+      activeNodes: ["redis", "mysql"],
+      activeEdges: [],
+      what: "（演示用）DB stock 因为人为漂移变成 0，但 Redis stock 还是 100。模拟一种'账本漂移'场景。",
+      why: "真实生产里这种漂移可能来自运维手动 SQL、迁移脚本 bug、Bootstrap 配错等。Consumer 端必须能识别并走 DLT。",
+      code: "（演示初始条件）",
+    },
+    {
+      title: "用户抢券，Lua 通过",
+      activeNodes: ["client", "gateway", "api", "redis"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"], ["api", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:stock:1": 99,
+          "seckill:order:1": "{ userId=7 }",
+          "seckill:pending:1:42": "{ userId:7, … }",
+          "seckill:pending:index": "[ (1:42, ts) ]",
+        },
+      },
+      what: "Lua 看 meta 时间窗 ✓ + 自己的 stock=100 > 0 → 放行。Lua 视角下 Redis 状态完美。",
+      why: "Lua 看不到 DB 的真实 stock。这就是为什么需要 Consumer 端 WHERE stock>0 兜底——本场景演示的就是这道防线起作用。",
+      code: "seckill.lua",
+    },
+    {
+      title: "Kafka 投递成功",
+      activeNodes: ["api", "kafka"],
+      activeEdges: [["api", "kafka"]],
+      stateChange: {
+        kafka: { "order.created": "[ {orderId:42, …} ]" },
+      },
+      what: "Kafka send 正常，消息进入 order.created。",
+      why: "这条路径不涉及 Kafka 故障；问题在 Consumer 端。",
+      code: "VoucherOrderServiceImpl",
+    },
+    {
+      title: "Consumer 处理：INSERT 成功",
+      activeNodes: ["kafka", "consumer", "mysql"],
+      activeEdges: [["kafka", "consumer"], ["consumer", "mysql"]],
+      what: "事务内 INSERT tb_voucher_order(orderId=42) → 成功（DB 之前没这条记录，PK 无冲突，uk_user_voucher_active 也无冲突）。",
+      why: "INSERT 走在前面是为了早暴露唯一索引冲突。",
+      code: "VoucherOrderTxService.handleRealOrderCreation",
+    },
+    {
+      title: "❌ UPDATE stock 失败",
+      activeNodes: ["consumer", "mysql"],
+      activeEdges: [["consumer", "mysql"]],
+      edgeAnnotation: "❌ DB stock=0, WHERE stock>0 → 0 rows",
+      what: "UPDATE tb_seckill_voucher SET stock=stock-1 WHERE voucher_id=1 AND stock>0 → 影响 0 行 → 抛 IllegalStateException → 事务回滚。",
+      why: "WHERE stock>0 是 DB 端最终防线。Redis 漏判时这里硬拦下来。INSERT 也回滚，DB 状态干净。",
+      code: "VoucherOrderTxService L91-95",
+    },
+    {
+      title: "Spring Kafka 重试 3 次失败",
+      activeNodes: ["consumer"],
+      activeEdges: [],
+      what: "FixedBackOff(500ms, 3) → 间隔 500ms 重试 3 次，都因 stock 漂移失败。",
+      why: "3 次 1.5s 给瞬时故障留窗口。不无限重试，免得卡住 partition。",
+      code: "KafkaConsumerConfig L69",
+    },
+    {
+      title: "🔑 Recoverer 在写 fence 后投 DLT",
+      activeNodes: ["consumer", "redis", "kafka"],
+      activeEdges: [["consumer", "redis"], ["consumer", "kafka"]],
+      edgeAnnotation: "1. SET fence  2. publish DLT",
+      stateChange: {
+        redis: { "seckill:dlt:fence:42": "1 (TTL=30min)" },
+        kafka: { "order.created.DLT": "[ {orderId:42, …} ]" },
+      },
+      what: "DeadLetterPublishingRecoverer 转发前先 SET seckill:dlt:fence:42 1 EX 1800 → 再发布到 order.created.DLT。",
+      why: "这是核心修复。fence 在 reconciler 任何可能扫描之前已经写入 Redis（无事务隔离，立即可见）。后续 reconciler 看到 fence 就不会误重投。",
+      code: "KafkaConsumerConfig.markDltFenceBeforePublish",
+    },
+    {
+      title: "⚠️ 模拟竞态：Reconciler 此刻扫描",
+      activeNodes: ["reconciler", "redis", "mysql"],
+      activeEdges: [["reconciler", "redis"], ["reconciler", "mysql"]],
+      what: "假设 reconciler 扫描的时间点正好在 DLT consumer 还没拉到死信、但 fence 已经写入的窗口。",
+      why: "如果没有 fence，reconciler 会看到 'DB 无 + failed 无 + pending 有' → 误判 → REPUBLISH。这是 review 中抓到的 bug。",
+      code: "OrderReconcilerService.handleOne",
+    },
+    {
+      title: "✓ Reconciler 看到 fence → 跳过",
+      activeNodes: ["reconciler"],
+      activeEdges: [],
+      what: "三分支检查：DB 无订单 → failed 无记录 → fence 存在 ✓ → 返回 FENCED outcome，不重投。",
+      why: "fence 是协调信号。reconciler 知道这条 orderId 已经进入失败处理通道，自己不该插手。",
+      code: "OrderReconcilerService.handleOne L145-149",
+    },
+    {
+      title: "DLT consumer 拉到死信",
+      activeNodes: ["kafka", "consumer"],
+      activeEdges: [["kafka", "consumer"]],
+      what: "OrderDltConsumer 从 order.created.DLT 拉到消息。先刷新 fence TTL（防 30 分钟到期）。",
+      why: "fence 双写：recoverer 阶段写 + DLT consumer 阶段刷新。覆盖'recoverer 写失败 + Redis 恢复'的边缘场景。",
+      code: "OrderDltConsumer.onDeadLetter",
+    },
+    {
+      title: "DLT consumer @Transactional INSERT failed",
+      activeNodes: ["consumer", "mysql"],
+      activeEdges: [["consumer", "mysql"]],
+      stateChange: {
+        mysql: {
+          "tb_order_failed": "[ {order_id:42, reason:'DB stock 不足'} ]",
+        },
+      },
+      what: "事务内 INSERT tb_order_failed。先 SELECT tb_voucher_order 防御：DB 已有订单（极端 race）则跳过。",
+      why: "OrderDltProcessingService 用 @Transactional 包，让 failed 记录的可见性原子。和 release Lua 分隔。",
+      code: "OrderDltProcessingService.persistFailedAndReleaseAfterCommit",
+    },
+    {
+      title: "Commit + afterCommit release Redis",
+      activeNodes: ["consumer", "redis"],
+      activeEdges: [["consumer", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:stock:1": 100,
+          "seckill:order:1": "{ }",
+          "seckill:pending:1:42": "∅",
+          "seckill:pending:index": "[ ]",
+        },
+      },
+      what: "DB commit → afterCommit 调 release Lua → SREM user / INCR stock / DEL pending / ZREM index。",
+      why: "释放 Redis 名额必须在 failed 记录已经持久化之后。事务内调 Redis 会在 commit 失败时已释放就出错。",
+      code: "OrderDltProcessingService.registerAfterCommitRelease",
+    },
+    {
+      title: "用户 queryOrder 拿到 status=-1",
+      activeNodes: ["client", "gateway", "api", "mysql"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"], ["api", "mysql"]],
+      what: "前端轮询：DB 无订单 → failed 表有记录 → 返回 status=-1 \"下单失败\"。前端显示失败状态并停止轮询。",
+      why: "queryOrder 回退查询：先 DB → 再 failed 表 → 都没有才返回'创建中'。三态明确。",
+      code: "VoucherOrderServiceImpl.queryOrder",
+    },
+    {
+      title: "终态对账",
+      activeNodes: ["redis", "mysql"],
+      activeEdges: [],
+      what: "Redis stock=100 ✓ ; Redis set={} ✓ ; DB orders=[] ✓ ; failed=[42] ✓ ; fence 30min 后自动过期。",
+      why: "无超卖、无丢单、无幽灵记录。fence 防住了 race；@Transactional + afterCommit 保证 Redis 释放原子化。",
+      code: "全链路终态",
+    },
+  ],
+};
+
+const CANCEL_FLOW = {
+  id: "cancel",
+  name: "取消 + Retry Outbox",
+  description: "Redis 释放失败时 retry 表兜底（8 步）",
+  initialState: {
+    redis: {
+      "seckill:stock:1": 99,
+      "seckill:order:1": "{ userId=7 }",
+      "seckill:pending:1:42": "∅",
+      "seckill:pending:index": "[ ]",
+      "seckill:dlt:fence:42": "∅",
+    },
+    mysql: {
+      "tb_voucher_order": "[ {id:42, status:1} ]",
+      "tb_seckill_voucher.stock": 99,
+      "tb_order_failed": "[ ]",
+      "tb_order_release_retry": "[ ]",
+    },
+    kafka: { "order.created": "[ ]", "order.created.DLT": "[ ]" },
+  },
+  steps: [
+    {
+      title: "初始：用户有未支付订单",
+      activeNodes: ["mysql", "redis"],
+      activeEdges: [],
+      what: "订单 42 status=1。用户 7 在 Redis order set 里。Redis 和 DB stock 都是 99（一致）。",
+      why: "这是 happy path 落库后的稳态。",
+      code: "（初始状态）",
+    },
+    {
+      title: "用户点击取消",
+      activeNodes: ["client", "gateway", "api"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"]],
+      what: "前端 POST /api/voucher-order/42/cancel。",
+      why: "只允许未支付订单取消，已支付则前端按钮 disabled。",
+      code: "VoucherOrderController.cancelOrder",
+    },
+    {
+      title: "@Transactional 三步：CAS + 回补 + 写 outbox",
+      activeNodes: ["api", "mysql"],
+      activeEdges: [["api", "mysql"]],
+      stateChange: {
+        mysql: {
+          "tb_voucher_order": "[ {id:42, status:4} ]",
+          "tb_seckill_voucher.stock": 100,
+          "tb_order_release_retry": "[ {order_id:42, retry_count:0} ]",
+        },
+      },
+      what: "事务三步：① UPDATE order SET status=4 WHERE status=1（CAS）② UPDATE stock=stock+1 ③ INSERT tb_order_release_retry。",
+      why: "INSERT retry row 在事务内是关键 —— Redis 释放是接下来要做的事，万一 afterCommit Redis 抖动失败，retry 行让 reconciler 兜底。",
+      code: "VoucherOrderTxService.cancelUnpaidOrder",
+    },
+    {
+      title: "DB commit",
+      activeNodes: ["api", "mysql"],
+      activeEdges: [],
+      what: "事务提交。此时 DB 看是已取消、stock 已回补、retry 行已就位。",
+      why: "DB 是订单状态事实源。commit 这一刻就是用户视角'取消生效'的时刻。",
+      code: "(transaction commit)",
+    },
+    {
+      title: "✓ 路径 A：Redis 释放成功",
+      activeNodes: ["api", "redis"],
+      activeEdges: [["api", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:stock:1": 100,
+          "seckill:order:1": "{ }",
+        },
+      },
+      what: "afterCommit 调 release Lua：SREM user 7 / INCR stock / DEL pending / ZREM index。",
+      why: "Redis 释放在 afterCommit，commit 失败时 Redis 不动；commit 成功时 Redis 跟上。",
+      code: "VoucherOrderTxService.registerRedisReleaseAfterCommit",
+    },
+    {
+      title: "✓ 路径 A：清掉 retry 行",
+      activeNodes: ["api", "mysql"],
+      activeEdges: [["api", "mysql"]],
+      stateChange: {
+        mysql: { "tb_order_release_retry": "[ ]" },
+      },
+      what: "Redis 释放成功后，DELETE tb_order_release_retry WHERE order_id=42。",
+      why: "retry outbox 的目的就是兜底失败重试，成功后立刻清掉避免重复扫描。",
+      code: "VoucherOrderTxService.clearRedisReleaseRetry",
+    },
+    {
+      title: "❌ 路径 B：假设 Redis 抖动失败",
+      activeNodes: ["api", "redis"],
+      activeEdges: [["api", "redis"]],
+      edgeAnnotation: "❌ Redis timeout",
+      what: "afterCommit 调 release Lua 时 Redis 连接超时。catch 异常 → log.warn \"释放失败，retry 会兜底\"。",
+      why: "失败 = 不做任何事。retry 行已经在 DB 里了，下一轮自然会被扫到。",
+      code: "VoucherOrderTxService L289-296",
+    },
+    {
+      title: "❌ 路径 B：60s 后 reconciler 兜底",
+      activeNodes: ["reconciler", "mysql", "redis"],
+      activeEdges: [["reconciler", "mysql"], ["reconciler", "redis"]],
+      stateChange: {
+        redis: { "seckill:stock:1": 100, "seckill:order:1": "{ }" },
+        mysql: { "tb_order_release_retry": "[ ]" },
+      },
+      what: "OrderReconcilerService.retryRedisReleases 扫 tb_order_release_retry → 找到 orderId=42 → 验证 status=4 → 调 release Lua（幂等）→ 删 retry 行。",
+      why: "release Lua 幂等（pendingExists + forceUserRelease 两层守护），即使被反复调也不会出错。outbox 模式保证最终一致。",
+      code: "OrderReconcilerService.retryRedisReleases",
+    },
+  ],
+};
+
+const RATE_LIMIT = {
+  id: "rate-limit",
+  name: "Gateway 限流 (429)",
+  description: "nginx 把恶意刷单挡在 Java 之外（6 步）",
+  initialState: INITIAL_STATE,
+  steps: [
+    {
+      title: "正常用户先抢券成功",
+      activeNodes: ["client", "gateway", "api", "redis"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"], ["api", "redis"]],
+      stateChange: {
+        redis: {
+          "seckill:stock:1": 99,
+          "seckill:order:1": "{ userId=7 }",
+        },
+      },
+      what: "user=7 第一次抢券，1 req/s 通过 gateway 限流配额（10 req/s 上限）。Lua 走完，Redis stock=99。",
+      why: "限流的目的不是拦正常流量。每个用户偶发请求都在配额内顺利通过。",
+      code: "gateway/nginx.conf zone=order_ip",
+    },
+    {
+      title: "脚本攻击者狂刷 (100 req/s)",
+      activeNodes: ["client", "gateway"],
+      activeEdges: [["client", "gateway"]],
+      edgeAnnotation: "⚡ 100 req/s from one IP",
+      what: "攻击者从同一 IP 用脚本 100 req/s 打 /api/voucher-order/seckill/1。nginx 的 limit_req zone=order_ip rate=10r/s burst=30 启动。",
+      why: "limit_req_zone 用 $binary_remote_addr 做 key，按客户端 IP 维度独立计数（不同用户独立配额）。rate 是漏桶速率（10/s 长期），burst 是突发允许的额外排队量（30 个）。",
+      code: "limit_req_zone $binary_remote_addr zone=order_ip:20m rate=10r/s",
+    },
+    {
+      title: "前 ~40 个进入处理（10 通过 + 30 burst 排队）",
+      activeNodes: ["client", "gateway", "api"],
+      activeEdges: [["client", "gateway"], ["gateway", "api"]],
+      what: "burst=30 nodelay 意味着前 30 个超额请求会被 nginx 立即转发（不延迟），算入未来配额。所以第 1 秒内最多 ~40 个请求能到 backend。",
+      why: "burst=30 给真实用户连点（误点 / 网络重试）留容错空间，nodelay 避免排队时延。后续配额耗尽后 backend 是干净的。",
+      code: "limit_req zone=order_ip burst=30 nodelay",
+    },
+    {
+      title: "❌ 超出配额 → nginx 返回 429",
+      activeNodes: ["client", "gateway"],
+      activeEdges: [["gateway", "client"]],
+      edgeAnnotation: "❌ HTTP 429 Too Many Requests",
+      what: "第 41 个开始，请求被 nginx 直接拒绝，返回 HTTP 429。**没有任何流量到达 Java**。",
+      why: "把限流挡在 Java 之前是关键设计：① 不消耗 Tomcat 线程 ② 不浪费 Redis Lua 调用 ③ 不打扰 DB 连接池 ④ 不让攻击者的请求与正常用户竞争。最坏情况：被攻击的 IP 下的合法用户也被 429（IP 级粒度的代价）。",
+      code: "limit_req_status 429",
+    },
+    {
+      title: "Redis / DB 状态未被污染",
+      activeNodes: ["redis", "mysql"],
+      activeEdges: [],
+      what: "尽管攻击者发了 100+ 请求，Redis stock 只从 99 减到了大约 99-40=59（前 ~40 个被处理），但绝大多数没成单（因 user=7 sismember 拦下，返回'已下单'）。",
+      why: "**双层防御**：① 网络层 nginx 限速 ② 业务层 Lua 一人一单。即使 nginx 限速放过 40 个，Lua 单线程串行执行的 sismember 也只让 user=7 成单一次。",
+      code: "seckill.lua: sismember orderKey userId",
+    },
+    {
+      title: "其他端点配额独立",
+      activeNodes: ["client", "gateway"],
+      activeEdges: [["client", "gateway"]],
+      what: "user=7 同时调用 /api/voucher-order/42 (queryOrder) 查询订单 → 走的是通用 zone=api_ip (60r/s) 配额，不挤占 seckill 配额。code/login 同理独立。",
+      why: "**分级限流** 把不同业务的风险解耦。秒杀被刷不影响登录/查询；登录暴力破解不影响秒杀。每条 location 单独 limit_req zone=xxx 让配额隔离。",
+      code: "gateway/nginx.conf 4 个 zone 定义",
+    },
+  ],
+};
+
+const SCENARIOS = [HAPPY_PATH, KAFKA_OUTAGE, DLT_RACE, CANCEL_FLOW, RATE_LIMIT];
+
+/* ==================================================================
+   全局状态
+   ================================================================== */
+const state = {
+  scenarioId: SCENARIOS[0].id,
+  step: 0,
+  playing: false,
+  speed: 2000,
+  timer: null,
+};
+
+/* ==================================================================
+   累积状态计算
+   ================================================================== */
+function projectState(scenario, stepIdx) {
+  const result = JSON.parse(JSON.stringify(scenario.initialState));
+  for (let i = 0; i <= stepIdx && i < scenario.steps.length; i++) {
+    const change = scenario.steps[i].stateChange;
+    if (!change) continue;
+    for (const section of Object.keys(change)) {
+      result[section] = { ...result[section], ...change[section] };
+    }
+  }
+  return result;
+}
+
+/* ==================================================================
+   渲染：scenario tabs
+   ================================================================== */
+function renderTabs() {
+  const container = document.getElementById("scenarioTabs");
+  container.innerHTML = SCENARIOS.map((s, i) => `
+    <button data-id="${s.id}" class="${s.id === state.scenarioId ? "active" : ""}">
+      <span class="scenario-name">${s.name}</span>
+      <span class="scenario-num">${s.steps.length} 步</span>
+    </button>
+  `).join("");
+  container.querySelectorAll("button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.scenarioId = btn.dataset.id;
+      state.step = 0;
+      stopPlay();
+      renderAll();
+    });
+  });
+}
+
+/* ==================================================================
+   渲染：SVG 图
+   ================================================================== */
+function getEdgeAnchor(fromId, toId) {
+  const a = NODE_BY_ID[fromId], b = NODE_BY_ID[toId];
+  if (!a || !b) return null;
+  const ax = a.x + NODE_W / 2;
+  const ay = a.y + NODE_H / 2;
+  const bx = b.x + NODE_W / 2;
+  const by = b.y + NODE_H / 2;
+  const dx = bx - ax, dy = by - ay;
+  const angle = Math.atan2(dy, dx);
+  // 从边缘出发,不从中心出
+  const fromRadius = Math.min(NODE_W / 2, NODE_H / 2 / Math.abs(Math.sin(angle) || 0.01));
+  const toRadius = fromRadius;
+  return {
+    x1: ax + Math.cos(angle) * (NODE_W / 2 + 2),
+    y1: ay + Math.sin(angle) * (NODE_H / 2 + 2),
+    x2: bx - Math.cos(angle) * (NODE_W / 2 + 14),
+    y2: by - Math.sin(angle) * (NODE_H / 2 + 14),
+  };
+}
+
+// 所有可能出现的边（背景弱化显示，活跃时高亮）
+const ALL_EDGES = [
+  ["client", "gateway"], ["gateway", "client"],
+  ["gateway", "api"], ["api", "gateway"],
+  ["api", "redis"], ["redis", "api"],
+  ["api", "kafka"], ["kafka", "api"],
+  ["kafka", "consumer"], ["consumer", "mysql"], ["consumer", "redis"],
+  ["consumer", "payment"], ["consumer", "kafka"],
+  ["reconciler", "redis"], ["reconciler", "mysql"], ["reconciler", "kafka"],
+  ["api", "mysql"], ["mysql", "api"],
+];
+
+function renderDiagram() {
+  const scenario = SCENARIOS.find(s => s.id === state.scenarioId);
+  const step = scenario.steps[state.step];
+  const activeNodes = new Set(step.activeNodes || []);
+  const activeEdges = new Set((step.activeEdges || []).map(([a, b]) => `${a}->${b}`));
+
+  // edges
+  const edgesG = document.getElementById("edges");
+  const seen = new Set();
+  edgesG.innerHTML = ALL_EDGES.filter(([f, t]) => {
+    const k = `${f}->${t}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).map(([from, to]) => {
+    const anchor = getEdgeAnchor(from, to);
+    if (!anchor) return "";
+    const isActive = activeEdges.has(`${from}->${to}`);
+    const isFail = isActive && step.edgeAnnotation && step.edgeAnnotation.includes("❌");
+    const cls = isActive ? `edge active${isFail ? " failure" : ""}` : "edge";
+    const marker = isActive ? (isFail ? "url(#arrow-fail)" : "url(#arrow-active)") : "url(#arrow)";
+    const pathId = `path-${from}-${to}`;
+    return `
+      <path id="${pathId}" d="M ${anchor.x1} ${anchor.y1} L ${anchor.x2} ${anchor.y2}"
+            class="${cls}" marker-end="${marker}"></path>
+      ${isActive ? `
+        <circle r="4" class="edge-pulse${isFail ? " failure" : ""}">
+          <animateMotion dur="1.4s" repeatCount="indefinite">
+            <mpath href="#${pathId}"></mpath>
+          </animateMotion>
+        </circle>
+      ` : ""}
+    `;
+  }).join("");
+
+  // nodes
+  const nodesG = document.getElementById("nodes");
+  nodesG.innerHTML = NODES.map(node => {
+    const isActive = activeNodes.has(node.id);
+    return `
+      <g transform="translate(${node.x}, ${node.y})">
+        <rect width="${NODE_W}" height="${NODE_H}" rx="10" class="node-rect ${isActive ? "active" : ""}"></rect>
+        <rect x="12" y="14" width="28" height="28" rx="8" class="node-icon-bg ${isActive ? "active" : ""}"></rect>
+        <g transform="translate(20, 22)" class="node-icon ${isActive ? "active" : ""}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="0" y="0">
+            ${ICONS[node.icon] || ""}
+          </svg>
+        </g>
+        <text x="50" y="30" class="node-label">${node.label}</text>
+        <text x="50" y="48" class="node-sub">${node.sub}</text>
+      </g>
+    `;
+  }).join("");
+
+  // annotation (failure message)
+  const annoG = document.getElementById("annotation");
+  if (step.edgeAnnotation) {
+    const w = Math.min(290, 11 * step.edgeAnnotation.length);
+    annoG.innerHTML = `
+      <g transform="translate(${(940 - w) / 2}, 175)">
+        <rect width="${w}" height="32" rx="8" class="edge-annotation-bg"></rect>
+        <text x="${w / 2}" y="20" text-anchor="middle" class="edge-annotation">${step.edgeAnnotation}</text>
+      </g>
+    `;
+  } else {
+    annoG.innerHTML = "";
+  }
+}
+
+/* ==================================================================
+   渲染：state inspector
+   ================================================================== */
+function renderState() {
+  const scenario = SCENARIOS.find(s => s.id === state.scenarioId);
+  const step = scenario.steps[state.step];
+  const fullState = projectState(scenario, state.step);
+  const highlight = step.stateChange || {};
+
+  const sections = [
+    { key: "redis", label: "Redis", badge: "in-memory" },
+    { key: "mysql", label: "MySQL", badge: "事实源" },
+    { key: "kafka", label: "Kafka", badge: "消息通道" },
+  ];
+
+  document.getElementById("stateInspector").innerHTML = sections.map(({ key, label, badge }) => {
+    const rows = Object.entries(fullState[key] || {}).map(([k, v]) => {
+      const isHi = highlight[key] && (k in highlight[key]);
+      return `
+        <div class="state-row ${isHi ? "highlight" : ""}">
+          <span class="k">${escapeHtml(k)}</span>
+          <span class="v">${escapeHtml(formatVal(v))}</span>
+        </div>
+      `;
+    }).join("");
+    return `
+      <div class="state-section ${key}">
+        <div class="state-section-head">
+          <span>${label}</span>
+          <span class="badge">${badge}</span>
+        </div>
+        ${rows}
+      </div>
+    `;
+  }).join("");
+}
+
+function formatVal(v) {
+  if (v === null || v === undefined) return "∅";
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
+  return JSON.stringify(v);
+}
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/* ==================================================================
+   渲染：explanation panel
+   ================================================================== */
+function renderExplain() {
+  const scenario = SCENARIOS.find(s => s.id === state.scenarioId);
+  const step = scenario.steps[state.step];
+  document.getElementById("stepCounter").textContent = `STEP ${state.step + 1} / ${scenario.steps.length}`;
+  document.getElementById("stepTitle").textContent = step.title;
+  document.getElementById("explainWhat").textContent = step.what;
+  document.getElementById("explainWhy").textContent = step.why;
+  document.getElementById("explainCode").textContent = step.code;
+}
+
+/* ==================================================================
+   渲染：progress + controls
+   ================================================================== */
+function renderControls() {
+  const scenario = SCENARIOS.find(s => s.id === state.scenarioId);
+  const total = scenario.steps.length;
+  const pct = ((state.step + 1) / total) * 100;
+  document.getElementById("progressFill").style.width = pct + "%";
+  document.getElementById("progressText").textContent = `Step ${state.step + 1} / ${total}`;
+  document.getElementById("btnPrev").disabled = state.step === 0;
+  document.getElementById("btnNext").disabled = state.step >= total - 1;
+  document.getElementById("btnReset").disabled = state.step === 0;
+  // play icon
+  document.getElementById("playIcon").innerHTML = state.playing
+    ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`
+    : `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+  document.getElementById("playLabel").textContent = state.playing ? "暂停" : "播放";
+}
+
+function renderAll() {
+  renderTabs();
+  renderDiagram();
+  renderState();
+  renderExplain();
+  renderControls();
+}
+
+/* ==================================================================
+   控制逻辑
+   ================================================================== */
+function stepForward() {
+  const scenario = SCENARIOS.find(s => s.id === state.scenarioId);
+  if (state.step < scenario.steps.length - 1) {
+    state.step++;
+    renderAll();
+  } else {
+    stopPlay();
+  }
+}
+function stepBackward() {
+  if (state.step > 0) {
+    state.step--;
+    renderAll();
+  }
+}
+function reset() {
+  state.step = 0;
+  stopPlay();
+  renderAll();
+}
+function startPlay() {
+  state.playing = true;
+  state.timer = setInterval(stepForward, state.speed);
+  renderControls();
+}
+function stopPlay() {
+  state.playing = false;
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
+  renderControls();
+}
+function togglePlay() {
+  if (state.playing) stopPlay();
+  else startPlay();
+}
+
+document.getElementById("btnPrev").addEventListener("click", stepBackward);
+document.getElementById("btnNext").addEventListener("click", stepForward);
+document.getElementById("btnReset").addEventListener("click", reset);
+document.getElementById("btnPlay").addEventListener("click", togglePlay);
+document.getElementById("speedSelect").addEventListener("change", (e) => {
+  state.speed = Number(e.target.value);
+  if (state.playing) {
+    clearInterval(state.timer);
+    state.timer = setInterval(stepForward, state.speed);
+  }
+});
+
+// 键盘快捷键
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowRight" || e.key === "j") stepForward();
+  else if (e.key === "ArrowLeft" || e.key === "k") stepBackward();
+  else if (e.key === " ") { e.preventDefault(); togglePlay(); }
+  else if (e.key === "r") reset();
+});
+
+renderAll();
+</script>
+
+</body>
+</html>

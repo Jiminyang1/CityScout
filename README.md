@@ -5,7 +5,7 @@ CityScout is a local discovery and voucher demo app. The current focus is a high
 ## Tech Stack
 
 - Backend: Java 17, Spring Boot 3.5, Spring Kafka, MyBatis-Plus
-- Frontend: React 18, Vite, lucide-react
+- Frontend: React 18, Vite, TypeScript
 - Storage: MySQL 8.0, Redis 6.2
 - Messaging: Kafka 3.9 in KRaft mode
 - Build and runtime: Maven, Docker, Docker Compose
@@ -15,7 +15,8 @@ CityScout is a local discovery and voucher demo app. The current focus is a high
 The seckill order path is intentionally asynchronous:
 
 ```text
-Frontend
+Client
+  -> Nginx gateway rate limits /api traffic
   -> POST /api/voucher-order/seckill/{voucherId}
   -> Redis Lua reserves stock and writes pending
   -> Kafka order.created
@@ -30,23 +31,24 @@ Failure paths are handled by explicit recovery mechanisms:
 - `OrderDltConsumer` refreshes the fence, persists `tb_order_failed` transactionally, then releases Redis reservation in `afterCommit`.
 - `OrderReconcilerService` cleans stale pending rows, releases failed reservations, and republishes messages only when no DB order, failed row, or DLT fence exists.
 - Cancel and timeout release use `tb_order_release_retry` as a DB outbox so Redis release is retried after DB commit.
+- Login code sending is protected by both gateway IP rate limiting and Redis business limits: one code per phone per 60 seconds, ten codes per phone per day.
+- The React frontend polls order status only while the order is still `status=0` and backs off from 1s to 10s.
 
 ## Prerequisites
 
 - JDK 17
 - Maven 3.9+
 - Docker Desktop / Docker Compose v2
-- Node.js 20+ if running the frontend locally without Docker
-
+- Node.js 20+ if running the frontend locally
 ## Quick Start With Docker
 
 ```bash
-docker compose up -d --build mysql redis kafka backend frontend
+docker compose up -d --build mysql redis kafka backend gateway
 ```
 
 Services:
 
-- Frontend: `http://localhost:8080`
+- Gateway: `http://localhost:8080`
 - Backend: `http://localhost:8081`
 - MySQL: `localhost:3306`
 - Redis: `localhost:6379`
@@ -60,13 +62,26 @@ docker compose logs -f backend
 docker compose down
 ```
 
+### Gateway
+
+The Docker gateway is an Nginx reverse proxy and coarse IP rate limiter. It listens on `8080` and forwards `/api/*` to the backend service on the Docker network.
+
+Configured limits:
+
+- `/api/user/code`: `5r/m`, `burst=2`
+- `/api/user/login`: `10r/m`, `burst=5`
+- `/api/voucher-order/`: `10r/s`, `burst=30`
+- other `/api/`: `60r/s`, `burst=120`
+
+The Vite dev server still proxies directly to `http://localhost:8081`; gateway is mainly the Docker demo and load-test entry.
+
 ### Reset Demo Data
 
 MySQL init scripts in `sql/` only run when the Docker volume is first created. If schema changes are added after a volume already exists, reset the demo environment:
 
 ```bash
 docker compose down -v
-docker compose up -d --build mysql redis kafka backend frontend
+docker compose up -d --build mysql redis kafka backend gateway
 ```
 
 This deletes demo MySQL, Redis, and Kafka data.
@@ -93,6 +108,8 @@ npm install
 npm run dev
 ```
 
+The frontend dev server runs on `http://localhost:5173` and proxies `/api` to `http://localhost:8081`.
+
 The local backend config uses:
 
 - MySQL: `jdbc:mysql://localhost:3306/hmdp`
@@ -107,6 +124,8 @@ Main schema and seed data live in:
 
 - `sql/00_schema_seed.sql`
 - `sql/20260515_add_tb_order_release_retry.sql`
+- `sql/20260516_add_tb_shop_demo.sql`
+- `sql/20260516_expand_dummy_catalog.sql`
 
 Important tables:
 
@@ -117,23 +136,23 @@ Important tables:
 
 ## API Examples
 
-All backend routes are under `/api`.
+All backend routes are under `/api`. Use `8080` to go through gateway, or `8081` to call the backend directly during development.
 
 ```bash
 # request login code
-curl -X POST "http://localhost:8081/api/user/code?phone=13800000000"
+curl -X POST "http://localhost:8080/api/user/code?phone=13800000000"
 
 # login, returns token
-curl -X POST "http://localhost:8081/api/user/login" \
+curl -X POST "http://localhost:8080/api/user/login" \
   -H "Content-Type: application/json" \
   -d '{"phone":"13800000000","code":"123456"}'
 
 # seckill order
-curl -X POST "http://localhost:8081/api/voucher-order/seckill/1" \
+curl -X POST "http://localhost:8080/api/voucher-order/seckill/1" \
   -H "authorization: <token>"
 
 # query order
-curl "http://localhost:8081/api/voucher-order/<orderId>" \
+curl "http://localhost:8080/api/voucher-order/<orderId>" \
   -H "authorization: <token>"
 ```
 
@@ -147,11 +166,21 @@ zsh -lic 'mvn -q -DskipTests package'
 git diff --check
 ```
 
+Frontend checks:
+
+```bash
+cd frontend
+npm install
+npm run lint
+npm run build
+```
+
 Docker checks:
 
 ```bash
 docker compose build backend
-docker compose up -d backend
+docker compose up -d backend gateway
+docker compose config
 docker compose logs --since=2m backend
 ```
 
@@ -162,14 +191,6 @@ Expected startup signals include:
 - Kafka partition assignment for `order.created`
 - Kafka partition assignment for `order.created.DLT`
 
-Frontend checks:
-
-```bash
-cd frontend
-npm install
-npm run build
-```
-
 ## Runtime Notes
 
 - Java runtime should be 17.
@@ -177,3 +198,10 @@ npm run build
 - Redis config uses `spring.data.redis.*`.
 - Kafka uses manual immediate ack and at-least-once delivery; idempotency is enforced with DB primary keys and unique indexes.
 - `guide.md` is a local deep-dive document and is intentionally ignored by git in this workspace.
+
+## Known Gaps
+
+- `seckill:pending:index` currently stores `{voucherId}:{orderId}`. If the pending hash is lost before reconciliation, userId is not available for Redis reservation release. The next robustness pass should include userId in the durable reconciliation key or add another durable mapping.
+- `queryOrder` returns `status=0` when neither `tb_voucher_order` nor `tb_order_failed` has the order. This is fine for normal in-flight orders, but unknown or orphaned order ids need a timeout/failure policy.
+- Scheduled jobs currently assume one active backend worker. Multi-instance deployments should add ShedLock or a dedicated worker profile.
+- Voucher write APIs are currently grouped under `/api/voucher/**`; public read access and protected admin writes should be separated before exposing the service beyond local demos.

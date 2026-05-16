@@ -1,12 +1,16 @@
-# CityScout - 秒杀购票系统
+# CityScout - 本地商铺与秒杀券系统
 
 ## 项目概览
 
-Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
+Spring Boot + Redis + Kafka + MySQL 秒杀系统，带 React + Vite + TypeScript 桌面 Web 前端。当前前端只覆盖第一阶段消费者闭环：登录、浏览商铺、查看券、秒杀下单、订单状态、模拟支付和取消订单。
 
 ## 架构
 
 ```
+用户 Web → Vite dev server(5173) 或 nginx Gateway(8080)
+          │
+          ├─ Gateway: IP 粗限流 /api/user/code, /api/user/login, /api/voucher-order/, /api/*
+          ↓
                                                 ┌──────────────────────┐
 用户请求 → Controller ─┬─ Lua 原子(扣库存+pending Hash) ─┐                │
                        │                                  │                │
@@ -35,6 +39,8 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 
 ## 核心组件
 
+- **Frontend** `frontend/` — React + Vite + TS 桌面 Web，Vite proxy 将 `/api` 转到 `http://localhost:8081`
+- **Gateway** `gateway/nginx.conf` — Docker demo 入口，监听 `8080`，对登录、验证码、订单和普通 API 做 IP 粗限流，超出返回 429
 - **Redis Lua** `seckill.lua` — 原子完成 4 件事：校验库存、校验一人一单、扣库存+加 user、写 pending Hash + index ZSET。pending 是 Redis 侧 outbox 凭证。
 - **Producer** — `kafkaTemplate.send()` fire-and-forget（不调 `.get()`），失败不补偿，依赖 reconciler
 - **Consumer** — 幂等落库（INSERT + stock 扣减），失败抛异常 → Spring Kafka 重试 3 次 → DLT
@@ -42,14 +48,14 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 - **Reconciler** `OrderReconcilerService` — 60s 定时扫描 pending index，三分支自愈（清理 / 释放 / 重投），并重试 cancel release outbox
 - **取消** `cancelUnpaidOrder` — DB 事务内改状态 + 回补 stock + 写 `tb_order_release_retry`，Redis 释放放在 `afterCommit`，失败后定时重试
 - **OrderTimeoutService** — 定时扫描 15 分钟未支付订单，走取消流程
+- **验证码限流** `UserServiceImpl.sendCode` — 同手机号 60 秒一次、每天最多 10 次，Redis key 为 `login:code:cooldown:{phone}` 和 `login:code:daily:{phone}:{yyyyMMdd}`
 
 ## 技术栈
 
-- Java 17, Spring Boot 2.7.12, MyBatis-Plus 3.4.3
+- Java 17, Spring Boot 3.5.x, MyBatis-Plus
+- React 18, Vite, TypeScript, ESLint
 - Redis 6.2, Kafka 3.9 (KRaft), MySQL 8.0
-- Spring Kafka 2.9.x（`DeadLetterPublishingRecoverer`）
 - Docker Compose 一键部署
-- React 18 + Vite + lucide-react 前端
 
 ## Redis Key 设计
 
@@ -59,6 +65,9 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 | `seckill:order:{voucherId}` | Set | 已下单 userId 集合（一人一单） |
 | `seckill:pending:{voucherId}:{orderId}` | Hash | Lua 写入的待落库凭证（userId, requestId, createTs），TTL 24h |
 | `seckill:pending:index` | ZSET | pending 全局索引，score=createTs，member=`{voucherId}:{orderId}` |
+| `seckill:dlt:fence:{orderId}` | String | DLT 处理窗口标记，防止 reconciler 误重投失败订单 |
+| `login:code:cooldown:{phone}` | String | 验证码 60 秒冷却 |
+| `login:code:daily:{phone}:{yyyyMMdd}` | String | 验证码每日次数限制 |
 
 ## MySQL 表
 
@@ -80,13 +89,11 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
 
 ## 测试
 
-- 单元测试：`src/test/java/com/hmdp/service/impl/{VoucherOrderTxServiceTest,OrderReconcilerServiceTest}.java`（20 个，Mockito，覆盖关键分支）
-- 端到端冒烟：`scripts/smoke_test.sh A|B|C|all`
-  - A: happy path
-  - B: Kafka 短暂不可用 → reconciler 重投（~3 分钟）
-  - C: DB stock 漂移触发 consumer 失败 → DLT 释放
+- 后端：`mvn test -q`
+- 前端：`cd frontend && npm run lint && npm run build`
+- Docker/gateway：`docker compose config`，`docker compose up -d --build mysql redis kafka backend gateway`
 
-跑测试需要：JDK 17（不是 JDK 25，Lombok 1.18.24 不兼容）+ `docker-compose up -d mysql redis kafka` + 本地 `mvn spring-boot:run`。
+跑测试需要：JDK 17 + Node.js 20+ + Docker Compose v2。
 
 ## 需要注意的点
 
@@ -96,10 +103,11 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
 4. **唯一索引兜底**：`uk_user_voucher_active`（基于 `active_order_key` 生成列）是 consumer 端最后一道防线。Consumer 撞同 orderId = 幂等清 pending；撞同用户同券活跃订单 = 还回本次 Lua 预扣的 Redis stock，但保留 user set。
 5. **DLT 触发条件**：消息处理 3 次失败 → DLT；唯一索引冲突算幂等不算失败。
 6. **Reconciler 假设单实例**：当前未加分布式锁。多实例部署需要加 ShedLock 或类似。
+7. **前端轮询降级**：订单详情只在 `status=0` 创建中时轮询，节奏为 `1s -> 2s -> 3s -> 5s -> 8s -> 10s`，终态立即停止。
+8. **Nginx 不是自动多实例负载均衡**：当前 upstream 只有 `backend:8081`。要 scale backend，需要去掉 `container_name` 和宿主端口绑定，再用 Compose service DNS 或显式 upstream。
 
 ## 待清理
 
-- `nginx-1.18.0/` — 老的静态 HTML 前端，docker-compose 和 Dockerfile 已不再引用，删掉即可
 - `interview-chain/`、`seckill-demo/` — 独立演示目录，和主项目无关
 - 一堆历史 markdown（`AMAZON_*`、`INTERVIEW_*`、`PAYMENT_*`、`TECHNICAL_*`、`authentication_logic_analysis.md` 等）和 SVG，未跟踪或已删但未 commit
 
@@ -109,3 +117,6 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
 - `PaymentSimulationService` 10% 模拟失败时无主动恢复，依赖 `OrderTimeoutService` 15 分钟超时。
 - Reconciler 单实例假设。
 - 单 Redis 节点，Lua KEYS 显式声明已做但 `seckill:pending:index` 全局 ZSET 在多 slot 集群下需要 hashtag 改造。
+- `seckill:pending:index` member 目前不带 userId；如果 pending Hash 丢失，reconciler 无法完整释放 Redis 名额。
+- `queryOrder` 对 DB/failed 都不存在的订单统一返回“创建中”，需要后续区分真实 in-flight 和未知/孤儿订单。
+- `/api/voucher/**` 当前既包含公开读接口也包含写接口，后续应拆分公开读和受保护的管理写接口。
