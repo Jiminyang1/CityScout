@@ -106,10 +106,14 @@ Docker backend overrides these via environment variables in `docker-compose.yml`
 Main schema and seed data live in:
 
 - `sql/00_schema_seed.sql`
+- `sql/20260304_add_uk_user_voucher.sql`
+- `sql/20260514_add_tb_order_failed.sql`
 - `sql/20260515_add_tb_order_release_retry.sql`
+- `sql/20261015_add_tb_shop.sql`
 
 Important tables:
 
+- `tb_shop`: demo shops (voucher shop_id=1 points here)
 - `tb_voucher_order`: final order state
 - `tb_order_failed`: DLT failure terminal state
 - `tb_order_release_retry`: outbox for Redis reservation release after cancel/timeout
