@@ -152,20 +152,13 @@ public class VoucherOrderTxService {
         return true;
     }
 
-    public int expireUnpaidOrders(LocalDateTime expireBefore, int limit) {
-        List<VoucherOrder> orders = voucherOrderMapper.selectList(
+    public List<VoucherOrder> listExpiredUnpaidOrders(LocalDateTime expireBefore, int limit) {
+        return voucherOrderMapper.selectList(
                 new QueryWrapper<VoucherOrder>()
                         .eq("status", 1)
                         .le("create_time", expireBefore)
                         .orderByAsc("create_time")
                         .last("LIMIT " + limit));
-        int expired = 0;
-        for (VoucherOrder order : orders) {
-            if (cancelUnpaidOrder(order.getId(), order.getUserId())) {
-                expired++;
-            }
-        }
-        return expired;
     }
 
     public int retryPendingRedisReleases(int limit) {
@@ -209,14 +202,16 @@ public class VoucherOrderTxService {
         String orderKey = RedisConstants.SECKILL_ORDER_KEY + voucherId;
         String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
         String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
+        String releasedKey = RedisConstants.SECKILL_RELEASED_KEY + orderId;
 
         Long result = stringRedisTemplate.execute(
                 SECKILL_RELEASE_SCRIPT,
-                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey),
+                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey, releasedKey),
                 userId.toString(),
                 voucherId.toString(),
                 orderId.toString(),
-                forceUserRelease ? "1" : "0");
+                forceUserRelease ? "1" : "0",
+                RedisConstants.SECKILL_RELEASED_TTL_SECONDS.toString());
         log.info("释放 Redis 名额完成, orderId={}, userId={}, voucherId={}, result={}",
                 orderId, userId, voucherId, result);
         return result;

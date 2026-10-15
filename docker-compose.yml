@@ -23,7 +23,7 @@ services:
   redis:
     image: redis:6.2-alpine
     container_name: hm-dianping-redis
-    command: redis-server
+    command: redis-server --appendonly yes --appendfsync everysec
     ports:
       - "6379:6379"
     volumes:

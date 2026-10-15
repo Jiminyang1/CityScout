@@ -31,23 +31,26 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
                                               OrderReconcilerService (60s/轮)
 ```
 
-详细架构、数据流、设计取舍见 [`guide.md`](guide.md)。
+项目说明、架构与运行方式见 [`README.md`](README.md)。
 
 ## 核心组件
 
-- **Redis Lua** `seckill.lua` — 原子完成 4 件事：校验库存、校验一人一单、扣库存+加 user、写 pending Hash + index ZSET。pending 是 Redis 侧 outbox 凭证。
+- **Redis Lua** `seckill.lua` — 原子完成 4 件事：校验库存、校验一人一单、扣库存+加 user、写 pending Hash + index ZSET。pending 是 Redis 侧 outbox 凭证；重复释放通过 `seckill:released:{orderId}` 做 7 天幂等保护。
 - **Producer** — `kafkaTemplate.send()` fire-and-forget（不调 `.get()`），失败不补偿，依赖 reconciler
 - **Consumer** — 幂等落库（INSERT + stock 扣减），失败抛异常 → Spring Kafka 重试 3 次 → DLT
 - **DLT Consumer** `OrderDltConsumer` — 落 `tb_order_failed` + 调用 release Lua 释放 Redis 名额
 - **Reconciler** `OrderReconcilerService` — 60s 定时扫描 pending index，三分支自愈（清理 / 释放 / 重投），并重试 cancel release outbox
 - **取消** `cancelUnpaidOrder` — DB 事务内改状态 + 回补 stock + 写 `tb_order_release_retry`，Redis 释放放在 `afterCommit`，失败后定时重试
-- **OrderTimeoutService** — 定时扫描 15 分钟未支付订单，走取消流程
+- **OrderTimeoutService** — 定时查询超时未支付订单，并通过 Spring 代理逐单调用事务取消流程，每单独立事务
+- **上传** — 图片目录由 `app.upload.image-dir` 配置，默认 `./data/imgs`；文件名限制为安全后缀，删除路径限制在 `blogs/` 下
+- **登录拦截** — 匿名路由白名单集中配置在 `MvcConfig`，商铺和优惠券写接口需要登录
 
 ## 技术栈
 
-- Java 17, Spring Boot 2.7.12, MyBatis-Plus 3.4.3
+- Java 17, Spring Boot 3.5.x, MyBatis-Plus 3.5.16（spring-boot3 starter）
 - Redis 6.2, Kafka 3.9 (KRaft), MySQL 8.0
-- Spring Kafka 2.9.x（`DeadLetterPublishingRecoverer`）
+- Spring Kafka 3.3.15（`DeadLetterPublishingRecoverer`）
+- Jakarta APIs
 - Docker Compose 一键部署
 - React 18 + Vite + lucide-react 前端
 
@@ -59,6 +62,8 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 | `seckill:order:{voucherId}` | Set | 已下单 userId 集合（一人一单） |
 | `seckill:pending:{voucherId}:{orderId}` | Hash | Lua 写入的待落库凭证（userId, requestId, createTs），TTL 24h |
 | `seckill:pending:index` | ZSET | pending 全局索引，score=createTs，member=`{voucherId}:{orderId}` |
+| `seckill:dlt:fence:{orderId}` | String | DLT 窗口 fence，TTL 30 分钟 |
+| `seckill:released:{orderId}` | String | 订单释放幂等标记，TTL 7 天 |
 
 ## MySQL 表
 
@@ -80,28 +85,33 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
 
 ## 测试
 
-- 单元测试：`src/test/java/com/hmdp/service/impl/{VoucherOrderTxServiceTest,OrderReconcilerServiceTest}.java`（20 个，Mockito，覆盖关键分支）
+- `mvn test` 当前约 100 个测试，不需要启动 MySQL、Redis 或 Kafka；Mockito 单元测试覆盖：
+  `BlogCommentsServiceImplTest`、`BlogServiceImplTest`、`FollowServiceImplTest`、
+  `OrderDltProcessingServiceTest`、`OrderReconcilerServiceTest`、`OrderTimeoutServiceTest`、
+  `ShopServiceImplTest`、`UserServiceImplTest`、`VoucherOrderTxServiceTest`、
+  `UploadControllerTest`、`KafkaConsumerConfigTest`、`RefreshTokenInterceptorTest`
+- `HmDianPingApplicationTests` 中的两个手动集成辅助方法需要本地 MySQL 和 Redis，默认跳过
 - 端到端冒烟：`scripts/smoke_test.sh A|B|C|all`
   - A: happy path
   - B: Kafka 短暂不可用 → reconciler 重投（~3 分钟）
   - C: DB stock 漂移触发 consumer 失败 → DLT 释放
 
-跑测试需要：JDK 17（不是 JDK 25，Lombok 1.18.24 不兼容）+ `docker-compose up -d mysql redis kafka` + 本地 `mvn spring-boot:run`。
+本项目使用 JDK 17；当前解析的 Spring Kafka 为 3.3.15，Lombok 为 1.18.46。
 
 ## 需要注意的点
 
 1. **Redis 是名额事实源**：Lua 通过即对用户做出名额承诺，不可撤销（除非 DLT 主动释放或用户取消）。
 2. **afterCommit 释放**：取消订单和 consumer 落库的 Redis 操作都放在 `TransactionSynchronizationManager.afterCommit`，避免事务回滚时 Redis 已经动手导致超卖。
-3. **Bootstrap SETNX**：启动时不覆盖 Redis 现有库存值。Redis 必须靠 AOF + 主从保证持久性。
+3. **Bootstrap SETNX**：启动时不覆盖 Redis 现有库存值。Compose 已开启 Redis AOF（`appendfsync everysec`）；Redis 当前仍为单节点。
 4. **唯一索引兜底**：`uk_user_voucher_active`（基于 `active_order_key` 生成列）是 consumer 端最后一道防线。Consumer 撞同 orderId = 幂等清 pending；撞同用户同券活跃订单 = 还回本次 Lua 预扣的 Redis stock，但保留 user set。
 5. **DLT 触发条件**：消息处理 3 次失败 → DLT；唯一索引冲突算幂等不算失败。
 6. **Reconciler 假设单实例**：当前未加分布式锁。多实例部署需要加 ShedLock 或类似。
+7. **超时取消事务**：`OrderTimeoutService` 只查询超时订单；每笔订单经 Spring 代理调用 `cancelUnpaidOrder`，各自在独立事务中提交后释放 Redis。
+8. **访问控制**：匿名路由白名单位于 `MvcConfig`；商铺和优惠券写接口要求登录。
 
 ## 待清理
 
 - `nginx-1.18.0/` — 老的静态 HTML 前端，docker-compose 和 Dockerfile 已不再引用，删掉即可
-- `interview-chain/`、`seckill-demo/` — 独立演示目录，和主项目无关
-- 一堆历史 markdown（`AMAZON_*`、`INTERVIEW_*`、`PAYMENT_*`、`TECHNICAL_*`、`authentication_logic_analysis.md` 等）和 SVG，未跟踪或已删但未 commit
 
 ## 已知遗留
 
@@ -109,3 +119,4 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
 - `PaymentSimulationService` 10% 模拟失败时无主动恢复，依赖 `OrderTimeoutService` 15 分钟超时。
 - Reconciler 单实例假设。
 - 单 Redis 节点，Lua KEYS 显式声明已做但 `seckill:pending:index` 全局 ZSET 在多 slot 集群下需要 hashtag 改造。
+- 当前没有管理员角色；商铺和优惠券写接口虽要求登录，但任何登录用户都可访问。

@@ -29,8 +29,10 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -203,12 +205,23 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("用户未登录");
         }
 
-        List<VoucherOrderStatusDTO> orders = list(new QueryWrapper<VoucherOrder>()
+        List<VoucherOrder> voucherOrders = list(new QueryWrapper<VoucherOrder>()
                 .eq("user_id", userId)
                 .orderByDesc("create_time")
-                .last("LIMIT 20"))
-                .stream()
-                .map(this::toStatusDTO)
+                .last("LIMIT 20"));
+        List<Long> voucherIds = voucherOrders.stream()
+                .map(VoucherOrder::getVoucherId)
+                .filter(voucherId -> voucherId != null)
+                .distinct()
+                .collect(Collectors.toList());
+        Map<Long, String> titles = new HashMap<>();
+        if (!voucherIds.isEmpty()) {
+            for (Voucher voucher : voucherService.listByIds(voucherIds)) {
+                titles.put(voucher.getId(), voucher.getTitle());
+            }
+        }
+        List<VoucherOrderStatusDTO> orders = voucherOrders.stream()
+                .map(order -> toStatusDTO(order, titles))
                 .collect(Collectors.toList());
         return Result.ok(orders);
     }
@@ -269,6 +282,16 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     }
 
     private VoucherOrderStatusDTO toStatusDTO(VoucherOrder order) {
+        Voucher voucher = voucherService.getById(order.getVoucherId());
+        return toStatusDTO(order, voucher == null ? "秒杀券" : voucher.getTitle());
+    }
+
+    private VoucherOrderStatusDTO toStatusDTO(VoucherOrder order, Map<Long, String> titles) {
+        String title = titles.get(order.getVoucherId());
+        return toStatusDTO(order, title == null ? "秒杀券" : title);
+    }
+
+    private VoucherOrderStatusDTO toStatusDTO(VoucherOrder order, String voucherTitle) {
         VoucherOrderStatusDTO dto = new VoucherOrderStatusDTO();
         dto.setId(String.valueOf(order.getId()));
         dto.setVoucherId(order.getVoucherId());
@@ -279,9 +302,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         dto.setUseTime(order.getUseTime());
         dto.setRefundTime(order.getRefundTime());
         dto.setUpdateTime(order.getUpdateTime());
-
-        Voucher voucher = voucherService.getById(order.getVoucherId());
-        dto.setVoucherTitle(voucher == null ? "秒杀券" : voucher.getTitle());
+        dto.setVoucherTitle(voucherTitle);
         return dto;
     }
 
