@@ -223,7 +223,8 @@ class VoucherOrderTxServiceTest {
         // afterCommit 触发后，release Lua 被调用
         fireAfterCommit();
         verify(stringRedisTemplate).execute(any(RedisScript.class), anyList(),
-                eq(userId.toString()), eq("1"), eq(orderId.toString()), eq("1"));
+                eq(userId.toString()), eq("1"), eq(orderId.toString()), eq("1"),
+                eq("604800"));
         verify(orderReleaseRetryMapper).deleteById(orderId);
     }
 
@@ -236,7 +237,7 @@ class VoucherOrderTxServiceTest {
         when(voucherOrderMapper.update(any(), any())).thenReturn(1);
         mockSeckillUpdate(true);
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(),
-                anyString(), anyString(), anyString(), anyString()))
+                anyString(), anyString(), anyString(), anyString(), anyString()))
                 .thenThrow(new RuntimeException("redis down"));
 
         boolean ok = txService.cancelUnpaidOrder(orderId, userId);
@@ -318,7 +319,7 @@ class VoucherOrderTxServiceTest {
 
         assertEquals(1, released);
         verify(stringRedisTemplate).execute(any(RedisScript.class), anyList(),
-                eq("9"), eq("1"), eq("5001"), eq("1"));
+                eq("9"), eq("1"), eq("5001"), eq("1"), eq("604800"));
         verify(orderReleaseRetryMapper).deleteById(5001L);
     }
 
@@ -349,7 +350,7 @@ class VoucherOrderTxServiceTest {
         when(voucherOrderMapper.selectById(5003L))
                 .thenReturn(new VoucherOrder().setId(5003L).setUserId(9L).setVoucherId(1L).setStatus(4));
         when(stringRedisTemplate.execute(any(RedisScript.class), anyList(),
-                anyString(), anyString(), anyString(), anyString()))
+                anyString(), anyString(), anyString(), anyString(), anyString()))
                 .thenThrow(new RuntimeException("redis down"));
 
         int released = txService.retryPendingRedisReleases(100);
@@ -371,8 +372,9 @@ class VoucherOrderTxServiceTest {
                         "seckill:stock:1",
                         "seckill:order:1",
                         "seckill:pending:1:4001",
-                        "seckill:pending:index")),
-                eq("9"), eq("1"), eq("4001"), eq("0"));
+                        "seckill:pending:index",
+                        "seckill:released:4001")),
+                eq("9"), eq("1"), eq("4001"), eq("0"), eq("604800"));
     }
 
     @Test
@@ -381,6 +383,6 @@ class VoucherOrderTxServiceTest {
 
         verify(stringRedisTemplate).execute(
                 any(RedisScript.class), anyList(),
-                eq("9"), eq("1"), eq("4002"), eq("1"));
+                eq("9"), eq("1"), eq("4002"), eq("1"), eq("604800"));
     }
 }
