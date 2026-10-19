@@ -67,6 +67,7 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，前端 React + Vite。
 
 ## MySQL 表
 
+- `tb_shop` — 演示商铺，`tb_voucher.shop_id` 引用；脚本在 `sql/20261015_add_tb_shop.sql`
 - `tb_seckill_voucher` — 秒杀库存，consumer 事务内扣减
 - `tb_voucher_order` — 订单生命周期，PK=orderId，唯一索引 `uk_user_voucher_active`（基于 `active_order_key` 生成列防一人多单）
 - `tb_order_failed` — DLT 处理后的终态失败订单，`queryOrder` 回退查询
