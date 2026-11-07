@@ -26,10 +26,12 @@ Client
 
 Failure paths are handled by explicit recovery mechanisms:
 
-- Redis Lua writes `seckill:pending:{voucherId}:{orderId}` and `seckill:pending:index` so the reconciler can replay uncertain Kafka sends.
+- Redis Lua writes `seckill:pending:{voucherId}:{orderId}` and `seckill:pending:index` (member `{voucherId}:{orderId}:{userId}`) so the reconciler can replay uncertain Kafka sends, and can still republish or release the reservation if the pending hash itself is lost.
 - `DeadLetterPublishingRecoverer` writes `seckill:dlt:fence:{orderId}` before publishing to `order.created.DLT`.
 - `OrderDltConsumer` refreshes the fence, persists `tb_order_failed` transactionally, then releases Redis reservation in `afterCommit`.
 - `OrderReconcilerService` cleans stale pending rows, releases failed reservations, and republishes messages only when no DB order, failed row, or DLT fence exists.
+- Consumer retries distinguish business failures from infrastructure outages: business failures (e.g. DB stock drift) get 1 attempt + 3 retries and then go to the DLT; transient DB/Redis failures (connection refused, Hikari timeout, lock wait timeout, `CannotCreateTransactionException`, …) back off exponentially (1s → 30s, unbounded by default) so a short MySQL outage does not turn already-reserved orders into failures.
+- If Redis loses the seckill admission keys while the app is running, `seckill.lua` returns 3 and the order endpoint rebuilds that voucher's `seckill:order` / `seckill:meta` / `seckill:stock` from MySQL under a short lock (`lock:seckill:init:{voucherId}`), then retries once — no backend restart needed.
 - Cancel and timeout release use `tb_order_release_retry` as a DB outbox so Redis release is retried after DB commit.
 - Login code sending is protected by both gateway IP rate limiting and Redis business limits: one code per phone per 60 seconds, ten codes per phone per day.
 - The React frontend polls order status only while the order is still `status=0` and backs off from 1s to 10s.
@@ -200,11 +202,13 @@ Expected startup signals include:
 - Spring Boot is 3.x, so code uses Jakarta package names.
 - Redis config uses `spring.data.redis.*`.
 - Kafka uses manual immediate ack and at-least-once delivery; idempotency is enforced with DB primary keys and unique indexes.
-- `guide.md` is a local deep-dive document and is intentionally ignored by git in this workspace.
+- Docker Redis runs with AOF `appendfsync everysec`; production should still add Redis HA.
+- Kafka topics are declared by the Spring app with 8 partitions; Docker's broker default is also set to 8 to avoid accidental auto-create drift.
+- `docs/` may exist as a local-only handbook in this workspace. It is intentionally ignored and should not be staged, committed, or treated as required project documentation.
 
 ## Known Gaps
 
-- `seckill:pending:index` currently stores `{voucherId}:{orderId}`. If the pending hash is lost before reconciliation, userId is not available for Redis reservation release. The next robustness pass should include userId in the durable reconciliation key or add another durable mapping.
+- When Redis is rebuilt from MySQL after data loss, in-flight Kafka orders are not yet reflected in DB stock, so Redis may briefly admit a few extra users; the consumer's conditional DB decrement rejects them into the DLT (no DB oversell, but those users see a failed order). Redis still needs HA (Sentinel / replica) in production.
 - `queryOrder` returns `status=0` when neither `tb_voucher_order` nor `tb_order_failed` has the order. This is fine for normal in-flight orders, but unknown or orphaned order ids need a timeout/failure policy.
 - Scheduled jobs currently assume one active backend worker. Multi-instance deployments should add ShedLock or a dedicated worker profile.
-- Voucher write APIs are currently grouped under `/api/voucher/**`; public read access and protected admin writes should be separated before exposing the service beyond local demos.
+- Voucher write APIs now require login, but there is no admin role model yet. Add role-based authorization before exposing write APIs beyond local demos.

@@ -5,9 +5,11 @@ import com.hmdp.entity.OrderFailed;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.OrderFailedMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.mq.OrderCreatedEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -23,6 +25,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -250,5 +253,96 @@ class OrderReconcilerServiceTest {
         // 5008 仍然被清理
         verify(stringRedisTemplate).delete("seckill:pending:1:5008");
         verify(zSetOps).remove("seckill:pending:index", "1:5008");
+    }
+
+    // ---------- 新格式 member：{voucherId}:{orderId}:{userId} ----------
+
+    @Test
+    void reconcile_newFormat_dbHasOrder_removesExactMember() {
+        stubCandidates("1:5101:9");
+        when(voucherOrderMapper.selectById(5101L)).thenReturn(new VoucherOrder().setId(5101L));
+
+        reconciler.reconcile();
+
+        verify(stringRedisTemplate).delete("seckill:pending:1:5101");
+        verify(zSetOps).remove("seckill:pending:index", "1:5101:9");
+        verifyNoInteractions(voucherOrderTxService, kafkaTemplate);
+    }
+
+    @Test
+    void reconcile_newFormat_pendingHashLost_republishesWithUserIdFromIndex() throws Exception {
+        stubCandidates("1:5102:9");
+        when(voucherOrderMapper.selectById(5102L)).thenReturn(null);
+        when(orderFailedMapper.selectById(5102L)).thenReturn(null);
+        when(stringRedisTemplate.hasKey("seckill:dlt:fence:5102")).thenReturn(false);
+        when(hashOps.entries("seckill:pending:1:5102")).thenReturn(Collections.emptyMap());
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"orderId\":5102}");
+
+        reconciler.reconcile();
+
+        ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
+        verify(objectMapper).writeValueAsString(event.capture());
+        OrderCreatedEvent sent = (OrderCreatedEvent) event.getValue();
+        assertEquals(5102L, sent.getOrderId());
+        assertEquals(9L, sent.getUserId());
+        assertEquals(1L, sent.getVoucherId());
+        assertEquals("reconcile-5102", sent.getRequestId());
+        verify(kafkaTemplate).send(eq("order.created"), eq("9"), eq("{\"orderId\":5102}"));
+        // 不清 index：等消费者落库后 afterCommit 清理，或者下一轮 reconciler 再处理
+        verify(zSetOps, never()).remove(any(), eq("1:5102:9"));
+    }
+
+    @Test
+    void reconcile_newFormat_failedOrder_pendingLost_noOtherActiveOrder_forceReleases() {
+        stubCandidates("1:5103:9");
+        when(voucherOrderMapper.selectById(5103L)).thenReturn(null);
+        when(orderFailedMapper.selectById(5103L)).thenReturn(new OrderFailed().setOrderId(5103L));
+        when(hashOps.entries("seckill:pending:1:5103")).thenReturn(Collections.emptyMap());
+        when(voucherOrderMapper.selectCount(any())).thenReturn(0L);
+
+        reconciler.reconcile();
+
+        verify(voucherOrderTxService).releaseRedisReservation(1L, 9L, 5103L, true);
+        verifyNoInteractions(kafkaTemplate);
+    }
+
+    @Test
+    void reconcile_newFormat_failedOrder_pendingLost_userHasOtherActiveOrder_onlyCleansIndex() {
+        stubCandidates("1:5104:9");
+        when(voucherOrderMapper.selectById(5104L)).thenReturn(null);
+        when(orderFailedMapper.selectById(5104L)).thenReturn(new OrderFailed().setOrderId(5104L));
+        when(hashOps.entries("seckill:pending:1:5104")).thenReturn(Collections.emptyMap());
+        when(voucherOrderMapper.selectCount(any())).thenReturn(1L);
+
+        reconciler.reconcile();
+
+        verify(zSetOps).remove("seckill:pending:index", "1:5104:9");
+        verifyNoInteractions(voucherOrderTxService, kafkaTemplate);
+    }
+
+    @Test
+    void reconcile_newFormat_failedOrder_pendingPresent_releasesWithPendingUser() {
+        stubCandidates("1:5105:9");
+        when(voucherOrderMapper.selectById(5105L)).thenReturn(null);
+        when(orderFailedMapper.selectById(5105L)).thenReturn(new OrderFailed().setOrderId(5105L));
+        Map<Object, Object> pending = new HashMap<>();
+        pending.put("userId", "9");
+        when(hashOps.entries("seckill:pending:1:5105")).thenReturn(pending);
+
+        reconciler.reconcile();
+
+        verify(voucherOrderTxService).releaseRedisReservation(1L, 9L, 5105L, false);
+        verify(voucherOrderMapper, never()).selectCount(any());
+    }
+
+    @Test
+    void reconcile_malformedNewFormatMembers_removedFromIndex() {
+        stubCandidates("1:5106:x", "1:2:3:4");
+
+        reconciler.reconcile();
+
+        verify(zSetOps).remove("seckill:pending:index", "1:5106:x");
+        verify(zSetOps).remove("seckill:pending:index", "1:2:3:4");
+        verifyNoInteractions(voucherOrderMapper, orderFailedMapper);
     }
 }

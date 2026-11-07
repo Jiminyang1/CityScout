@@ -30,6 +30,21 @@ public class RedisConstants {
     public static final Long SECKILL_DLT_FENCE_TTL = 30L;
     public static final String SECKILL_RELEASED_KEY = "seckill:released:";
     public static final Long SECKILL_RELEASED_TTL_SECONDS = 7 * 24 * 3600L;
+    /** Lua 返回"未初始化"时按券懒加载 Redis 准入数据的锁；拿不到锁或券不存在时也起到 10 秒节流作用。 */
+    public static final String SECKILL_INIT_LOCK_KEY = "lock:seckill:init:";
+    public static final Long SECKILL_INIT_LOCK_TTL_SECONDS = 10L;
+
+    /**
+     * seckill:pending:index 的 member。带上 userId，pending Hash 丢失时 reconciler 仍能重投或释放名额。
+     * 旧格式为 {voucherId}:{orderId}，reconciler 与释放脚本同时兼容两种格式。
+     */
+    public static String pendingIndexMember(Long voucherId, Long orderId, Long userId) {
+        return voucherId + ":" + orderId + ":" + userId;
+    }
+
+    public static String legacyPendingIndexMember(Long voucherId, Long orderId) {
+        return voucherId + ":" + orderId;
+    }
 
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";

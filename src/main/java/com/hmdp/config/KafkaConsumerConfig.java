@@ -3,6 +3,7 @@ package com.hmdp.config;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmdp.mq.OrderCreatedEvent;
+import com.hmdp.mq.TransientFailures;
 import com.hmdp.utils.RedisConstants;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -17,9 +18,12 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.BackOff;
+import org.springframework.util.backoff.ExponentialBackOff;
 import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.concurrent.TimeUnit;
@@ -37,6 +41,27 @@ public class KafkaConsumerConfig {
 
     @Value("${app.kafka.topic.partitions:8}")
     private int partitions;
+
+    /** 业务失败：首次 + 3 次重试（间隔 500ms）后进 DLT。 */
+    @Value("${app.kafka.consumer.business-retry.interval-ms:500}")
+    private long businessRetryIntervalMs = 500L;
+
+    @Value("${app.kafka.consumer.business-retry.max-retries:3}")
+    private long businessRetryMaxRetries = 3L;
+
+    /** 基础设施暂时不可用（DB/Redis 连不上、锁超时等）：指数退避，默认不设上限，等依赖恢复。 */
+    @Value("${app.kafka.consumer.transient-retry.initial-interval-ms:1000}")
+    private long transientInitialIntervalMs = 1000L;
+
+    @Value("${app.kafka.consumer.transient-retry.multiplier:2.0}")
+    private double transientMultiplier = 2.0;
+
+    @Value("${app.kafka.consumer.transient-retry.max-interval-ms:30000}")
+    private long transientMaxIntervalMs = 30000L;
+
+    /** 小于等于 0 表示不限时长；正数表示累计退避超过该毫秒数后仍按业务失败进 DLT。 */
+    @Value("${app.kafka.consumer.transient-retry.max-elapsed-ms:0}")
+    private long transientMaxElapsedMs = 0L;
 
     @Bean
     public NewTopic orderCreatedTopic() {
@@ -66,7 +91,7 @@ public class KafkaConsumerConfig {
         factory.setConcurrency(partitions);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
 
-        // 失败 3 次后将原消息写入 <topic>.DLT，保留原 partition
+        // 业务失败：首次 + 3 次重试后将原消息写入 <topic>.DLT，保留原 partition
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaTemplate,
                 (record, ex) -> {
@@ -74,16 +99,42 @@ public class KafkaConsumerConfig {
                     return new TopicPartition(orderCreatedDltTopic, record.partition());
                 });
 
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(500L, 3L));
+        DefaultErrorHandler errorHandler = orderCreatedErrorHandler(recoverer);
+        factory.setCommonErrorHandler(errorHandler);
+        return factory;
+    }
+
+    DefaultErrorHandler orderCreatedErrorHandler(ConsumerRecordRecoverer recoverer) {
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, businessBackOff());
+        // DB / Redis 暂时不可用时不要几秒内就进 DLT：Lua 已经承诺了名额，应等依赖恢复后照常落库。
+        // 异常类型变化时（例如 DB 恢复后变成真正的业务异常）Spring Kafka 会重置重试状态，改用对应的 BackOff。
+        errorHandler.setBackOffFunction((record, ex) -> backOffFor(ex));
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
-                log.warn("Kafka消费重试, topic={}, partition={}, offset={}, attempt={}",
-                        record.topic(), record.partition(), record.offset(), deliveryAttempt, ex));
+                log.warn("Kafka消费重试, topic={}, partition={}, offset={}, attempt={}, transient={}",
+                        record.topic(), record.partition(), record.offset(), deliveryAttempt,
+                        TransientFailures.isTransient(ex), ex));
 
         // 不可恢复异常直接进 DLT，不消耗重试次数
         errorHandler.addNotRetryableExceptions(IllegalArgumentException.class);
+        return errorHandler;
+    }
 
-        factory.setCommonErrorHandler(errorHandler);
-        return factory;
+    BackOff businessBackOff() {
+        return new FixedBackOff(businessRetryIntervalMs, businessRetryMaxRetries);
+    }
+
+    BackOff transientBackOff() {
+        ExponentialBackOff backOff = new ExponentialBackOff(transientInitialIntervalMs, transientMultiplier);
+        backOff.setMaxInterval(transientMaxIntervalMs);
+        if (transientMaxElapsedMs > 0) {
+            backOff.setMaxElapsedTime(transientMaxElapsedMs);
+        }
+        return backOff;
+    }
+
+    /** 返回 null 表示使用 DefaultErrorHandler 的默认（业务）BackOff。 */
+    BackOff backOffFor(Exception ex) {
+        return TransientFailures.isTransient(ex) ? transientBackOff() : null;
     }
 
     void markDltFenceBeforePublish(ConsumerRecord<?, ?> record,

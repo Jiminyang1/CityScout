@@ -76,7 +76,8 @@ redis.call('hset', pendingKey,
     'createTs', nowTs)
 redis.call('expire', pendingKey, 86400)
 
-local indexMember = voucherId .. ':' .. orderId
+-- member 带 userId：pending Hash 丢失时 reconciler 仍能据此重投或释放名额
+local indexMember = voucherId .. ':' .. orderId .. ':' .. userId
 redis.call('zadd', pendingIndexKey, nowTs, indexMember)
 
 return 0

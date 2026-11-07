@@ -27,8 +27,12 @@ local userId    = ARGV[1]
 local voucherId = ARGV[2]
 local orderId   = ARGV[3]
 
+-- 新格式 {voucherId}:{orderId}:{userId}，兼容旧格式 {voucherId}:{orderId}
+local indexMember = voucherId .. ':' .. orderId .. ':' .. userId
+local legacyIndexMember = voucherId .. ':' .. orderId
+
 if redis.call('exists', pendingKey) ~= 1 then
-    redis.call('zrem', pendingIndexKey, voucherId .. ':' .. orderId)
+    redis.call('zrem', pendingIndexKey, indexMember, legacyIndexMember)
     return 0
 end
 
@@ -38,7 +42,7 @@ if pendingUser ~= userId then
 end
 
 redis.call('del', pendingKey)
-redis.call('zrem', pendingIndexKey, voucherId .. ':' .. orderId)
+redis.call('zrem', pendingIndexKey, indexMember, legacyIndexMember)
 redis.call('sadd', orderKey, userId)
 redis.call('incrby', stockKey, 1)
 

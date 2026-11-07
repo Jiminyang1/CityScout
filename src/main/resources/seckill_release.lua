@@ -37,7 +37,9 @@ local orderId   = ARGV[3]
 local forceUserRelease = ARGV[4]
 local releasedTtlSeconds = ARGV[5]
 
-local indexMember = voucherId .. ':' .. orderId
+-- 新格式 {voucherId}:{orderId}:{userId}，兼容旧格式 {voucherId}:{orderId}
+local indexMember = voucherId .. ':' .. orderId .. ':' .. userId
+local legacyIndexMember = voucherId .. ':' .. orderId
 local pendingExists = redis.call('exists', pendingKey) == 1
 local userInSet = redis.call('sismember', orderKey, userId) == 1
 local releasedExists = redis.call('exists', releasedKey) == 1
@@ -50,7 +52,7 @@ if pendingExists then
     end
 
     redis.call('del', pendingKey)
-    redis.call('zrem', pendingIndexKey, indexMember)
+    redis.call('zrem', pendingIndexKey, indexMember, legacyIndexMember)
 
     if userInSet and not releasedExists then
         redis.call('srem', orderKey, userId)
@@ -63,7 +65,7 @@ end
 
 -- pending 已不在,但取消场景仍需释放 user
 if forceUserRelease == '1' then
-    redis.call('zrem', pendingIndexKey, indexMember)
+    redis.call('zrem', pendingIndexKey, indexMember, legacyIndexMember)
     if releasedExists then
         return 4
     end

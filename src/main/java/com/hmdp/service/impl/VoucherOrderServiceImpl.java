@@ -62,6 +62,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private OrderFailedMapper orderFailedMapper;
 
+    @Resource
+    private SeckillRedisInitializer seckillRedisInitializer;
+
     @Value("${app.kafka.topic.order-created:order.created}")
     private String orderCreatedTopic;
 
@@ -84,20 +87,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         String requestId = UUID.randomUUID().toString();
         long nowTs = System.currentTimeMillis();
 
-        String stockKey = RedisConstants.SECKILL_STOCK_KEY + voucherId;
-        String orderKey = RedisConstants.SECKILL_ORDER_KEY + voucherId;
-        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
-        String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
-        String metaKey = RedisConstants.SECKILL_META_KEY + voucherId;
-
-        Long luaFlag = stringRedisTemplate.execute(
-                SECKILL_SCRIPT,
-                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey, metaKey),
-                userId.toString(),
-                voucherId.toString(),
-                String.valueOf(orderId),
-                requestId,
-                String.valueOf(nowTs));
+        Long luaFlag = executeSeckillLua(voucherId, userId, orderId, requestId, nowTs);
+        if (luaFlag != null && luaFlag == 3L) {
+            // stock / meta 缺失：通常是 Redis 重启丢了数据。从 DB 现场补齐后重试一次，不必重启后端。
+            SeckillRedisInitializer.InitResult init = seckillRedisInitializer.ensureInitialized(voucherId);
+            if (init == SeckillRedisInitializer.InitResult.NOT_FOUND) {
+                return Result.fail("秒杀券不存在");
+            }
+            if (init == SeckillRedisInitializer.InitResult.INITIALIZED) {
+                luaFlag = executeSeckillLua(voucherId, userId, orderId, requestId, nowTs);
+            }
+        }
 
         if (luaFlag == null) {
             return Result.fail("下单失败");
@@ -150,6 +150,23 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         return Result.ok(String.valueOf(orderId));
+    }
+
+    private Long executeSeckillLua(Long voucherId, Long userId, long orderId, String requestId, long nowTs) {
+        String stockKey = RedisConstants.SECKILL_STOCK_KEY + voucherId;
+        String orderKey = RedisConstants.SECKILL_ORDER_KEY + voucherId;
+        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
+        String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
+        String metaKey = RedisConstants.SECKILL_META_KEY + voucherId;
+
+        return stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Arrays.asList(stockKey, orderKey, pendingKey, pendingIndexKey, metaKey),
+                userId.toString(),
+                voucherId.toString(),
+                String.valueOf(orderId),
+                requestId,
+                String.valueOf(nowTs));
     }
 
     @Override

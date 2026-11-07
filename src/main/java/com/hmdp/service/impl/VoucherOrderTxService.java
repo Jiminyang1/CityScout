@@ -91,7 +91,7 @@ public class VoucherOrderTxService {
             if (isActiveOrderDuplicate(duplicateKeyException, orderId, userId, voucherId)) {
                 registerDuplicateActiveCompensation(voucherId, userId, orderId);
             } else {
-                registerPendingCleanup(voucherId, orderId);
+                registerPendingCleanup(voucherId, orderId, userId);
             }
             return;
         }
@@ -109,7 +109,7 @@ public class VoucherOrderTxService {
             throw new IllegalStateException("DB stock 不足，orderId=" + orderId + ", voucherId=" + voucherId);
         }
 
-        registerPendingCleanup(voucherId, orderId);
+        registerPendingCleanup(voucherId, orderId, userId);
         triggerPaymentAfterCommit(orderId);
     }
 
@@ -237,15 +237,16 @@ public class VoucherOrderTxService {
     /**
      * Consumer 落库 afterCommit：仅清理 pending（user 名额保留给真实订单）。
      */
-    private void registerPendingCleanup(Long voucherId, Long orderId) {
+    private void registerPendingCleanup(Long voucherId, Long orderId, Long userId) {
         String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
         String pendingIndexKey = RedisConstants.SECKILL_PENDING_INDEX_KEY;
-        String indexMember = voucherId + ":" + orderId;
+        String indexMember = RedisConstants.pendingIndexMember(voucherId, orderId, userId);
+        String legacyIndexMember = RedisConstants.legacyPendingIndexMember(voucherId, orderId);
 
         Runnable cleanup = () -> {
             try {
                 stringRedisTemplate.delete(pendingKey);
-                stringRedisTemplate.opsForZSet().remove(pendingIndexKey, indexMember);
+                stringRedisTemplate.opsForZSet().remove(pendingIndexKey, indexMember, legacyIndexMember);
             } catch (Exception e) {
                 log.warn("清理 Redis pending 失败, orderId={}，reconciler 会兜底", orderId, e);
             }

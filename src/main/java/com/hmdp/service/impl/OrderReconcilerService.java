@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.OrderFailedMapper;
@@ -20,7 +21,10 @@ import java.util.Set;
 /**
  * 秒杀链路兜底对账服务。
  * 周期扫描 seckill:pending:index 中 age > 阈值的 pending 订单，
- * 按"DB 已存在 / DLT failed 已存在 / 都没有"三分支自愈。
+ * 按"DB 已存在 / DLT failed 已存在 / DLT fence / 都没有"四分支自愈。
+ *
+ * index member 格式为 {voucherId}:{orderId}:{userId}（兼容旧格式 {voucherId}:{orderId}）。
+ * pending Hash 丢失（TTL 过期或 Redis 丢数据）时，靠 member 里的 userId 仍可重投或释放名额。
  */
 @Slf4j
 @Service
@@ -74,26 +78,15 @@ public class OrderReconcilerService {
         int skip = 0;
 
         for (String member : candidates) {
-            // member 格式: "{voucherId}:{orderId}"
-            int sep = member.indexOf(':');
-            if (sep <= 0) {
-                log.warn("pending index 出现非法 member, 跳过: {}", member);
-                stringRedisTemplate.opsForZSet().remove(RedisConstants.SECKILL_PENDING_INDEX_KEY, member);
-                continue;
-            }
-            Long voucherId;
-            Long orderId;
-            try {
-                voucherId = Long.parseLong(member.substring(0, sep));
-                orderId = Long.parseLong(member.substring(sep + 1));
-            } catch (NumberFormatException e) {
-                log.warn("pending index member 解析失败, 跳过: {}", member);
-                stringRedisTemplate.opsForZSet().remove(RedisConstants.SECKILL_PENDING_INDEX_KEY, member);
+            PendingRef ref = PendingRef.parse(member);
+            if (ref == null) {
+                log.warn("pending index 出现非法 member, 移除: {}", member);
+                removeIndex(member);
                 continue;
             }
 
             try {
-                ReconcileOutcome outcome = handleOne(voucherId, orderId);
+                ReconcileOutcome outcome = handleOne(ref);
                 switch (outcome) {
                     case CLEANUP:    cleanup++;   break;
                     case RELEASE:    release++;   break;
@@ -102,7 +95,7 @@ public class OrderReconcilerService {
                     case SKIP:       skip++;      break;
                 }
             } catch (Exception e) {
-                log.warn("reconciler 处理失败, voucherId={}, orderId={}", voucherId, orderId, e);
+                log.warn("reconciler 处理失败, member={}", member, e);
                 skip++;
             }
         }
@@ -119,27 +112,20 @@ public class OrderReconcilerService {
         }
     }
 
-    private ReconcileOutcome handleOne(Long voucherId, Long orderId) {
+    private ReconcileOutcome handleOne(PendingRef ref) {
+        Long voucherId = ref.voucherId;
+        Long orderId = ref.orderId;
+
         // 分支一：DB 已存在订单 → consumer afterCommit 失败留下的脏 pending，清理
         VoucherOrder existing = voucherOrderMapper.selectById(orderId);
         if (existing != null) {
-            cleanupPending(voucherId, orderId);
+            cleanupPending(ref);
             return ReconcileOutcome.CLEANUP;
         }
 
         // 分支二：DLT failed 表已有 → DLT release 没成功，补释放
         if (orderFailedMapper.selectById(orderId) != null) {
-            String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
-            Map<Object, Object> pending = stringRedisTemplate.opsForHash().entries(pendingKey);
-            Long userId = parseUserId(pending);
-            if (userId == null) {
-                // pending 已经不在，只清 index
-                stringRedisTemplate.opsForZSet().remove(
-                        RedisConstants.SECKILL_PENDING_INDEX_KEY, voucherId + ":" + orderId);
-                return ReconcileOutcome.CLEANUP;
-            }
-            voucherOrderTxService.releaseRedisReservation(voucherId, userId, orderId, false);
-            return ReconcileOutcome.RELEASE;
+            return releaseFailedOrder(ref);
         }
 
         // 分支三：DLT consumer 已经拿到死信但 failed 事务尚未提交，避免把失败订单重投复活
@@ -149,22 +135,28 @@ public class OrderReconcilerService {
         }
 
         // 分支四：DB 没有 + failed 没有 + DLT fence 没有 → 重投 Kafka
-        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
-        Map<Object, Object> pending = stringRedisTemplate.opsForHash().entries(pendingKey);
-        if (pending == null || pending.isEmpty()) {
-            // pending Hash 也丢了 (TTL 过期或 Redis 异常)，无法重投，清 index
-            stringRedisTemplate.opsForZSet().remove(
-                    RedisConstants.SECKILL_PENDING_INDEX_KEY, voucherId + ":" + orderId);
-            log.warn("pending Hash 缺失，无法重投, voucherId={}, orderId={}", voucherId, orderId);
+        Map<Object, Object> pending = stringRedisTemplate.opsForHash().entries(pendingKey(ref));
+        boolean pendingMissing = pending == null || pending.isEmpty();
+        if (pendingMissing && ref.userId == null) {
+            // 旧格式 member 且 pending Hash 也丢了：没有 userId，既不能重投也不能释放，只能清 index
+            removeIndex(ref.member);
+            log.warn("pending Hash 缺失且 index 无 userId，无法重投, voucherId={}, orderId={}", voucherId, orderId);
             return ReconcileOutcome.SKIP;
         }
 
-        Long userId = parseUserId(pending);
-        String requestId = stringValue(pending.get("requestId"));
-        if (userId == null || requestId == null) {
-            log.warn("pending 数据残缺, 跳过: voucherId={}, orderId={}, pending={}",
-                    voucherId, orderId, pending);
+        Long userId = pendingMissing ? ref.userId : firstNonNull(parseUserId(pending), ref.userId);
+        if (userId == null) {
+            log.warn("pending 数据残缺, 跳过: voucherId={}, orderId={}, pending={}", voucherId, orderId, pending);
             return ReconcileOutcome.SKIP;
+        }
+        String requestId = pendingMissing ? null : stringValue(pending.get("requestId"));
+        if (requestId == null) {
+            requestId = "reconcile-" + orderId;
+        }
+        if (pendingMissing) {
+            // Lua 已经为这个用户扣过名额，按 index 里的 userId 重投；原消息若仍在途，DB 主键会去重
+            log.warn("pending Hash 缺失，按 index 中的 userId 重投, voucherId={}, orderId={}, userId={}",
+                    voucherId, orderId, userId);
         }
 
         OrderCreatedEvent event = new OrderCreatedEvent();
@@ -177,14 +169,15 @@ public class OrderReconcilerService {
             String payload = objectMapper.writeValueAsString(event);
             var future = kafkaTemplate.send(orderCreatedTopic, userId.toString(), payload);
             if (future != null) {
+                final Long uid = userId;
                 future.whenComplete((result, ex) -> {
                     if (ex != null) {
                         log.error("reconciler 重投真实失败, orderId={}, voucherId={}, userId={}",
-                                orderId, voucherId, userId, ex);
+                                orderId, voucherId, uid, ex);
                         return;
                     }
                     log.info("reconciler 重投已被 broker 接收, orderId={}, voucherId={}, userId={}",
-                            orderId, voucherId, userId);
+                            orderId, voucherId, uid);
                 });
             }
             log.info("reconciler 已提交重投请求, orderId={}, voucherId={}, userId={}",
@@ -196,11 +189,59 @@ public class OrderReconcilerService {
         }
     }
 
-    private void cleanupPending(Long voucherId, Long orderId) {
-        String pendingKey = RedisConstants.SECKILL_PENDING_KEY + voucherId + ":" + orderId;
-        String indexMember = voucherId + ":" + orderId;
-        stringRedisTemplate.delete(pendingKey);
-        stringRedisTemplate.opsForZSet().remove(RedisConstants.SECKILL_PENDING_INDEX_KEY, indexMember);
+    /**
+     * 订单已被 DLT 判定失败，但 Redis 名额还没释放。
+     * pending 在：正常释放（forceUserRelease=false，脚本会校验 pending 里的 userId）。
+     * pending 不在：用 index 里的 userId 强制释放；但如果该用户对这张券还有别的有效订单
+     *   （例如名额早已释放、用户又成功买了一单），就不能把他移出一人一单集合，只清 index。
+     */
+    private ReconcileOutcome releaseFailedOrder(PendingRef ref) {
+        Map<Object, Object> pending = stringRedisTemplate.opsForHash().entries(pendingKey(ref));
+        Long pendingUserId = parseUserId(pending);
+        if (pendingUserId != null) {
+            voucherOrderTxService.releaseRedisReservation(ref.voucherId, pendingUserId, ref.orderId, false);
+            return ReconcileOutcome.RELEASE;
+        }
+
+        if (ref.userId == null) {
+            // 旧格式 member + pending 已不在：无法定位用户，只清 index
+            removeIndex(ref.member);
+            return ReconcileOutcome.CLEANUP;
+        }
+
+        if (hasOtherActiveOrder(ref.userId, ref.voucherId, ref.orderId)) {
+            removeIndex(ref.member);
+            log.info("失败订单的用户已有其他有效订单，不释放名额，只清 index, voucherId={}, orderId={}, userId={}",
+                    ref.voucherId, ref.orderId, ref.userId);
+            return ReconcileOutcome.CLEANUP;
+        }
+
+        log.warn("失败订单的 pending Hash 已缺失，按 index 中的 userId 释放名额, voucherId={}, orderId={}, userId={}",
+                ref.voucherId, ref.orderId, ref.userId);
+        voucherOrderTxService.releaseRedisReservation(ref.voucherId, ref.userId, ref.orderId, true);
+        return ReconcileOutcome.RELEASE;
+    }
+
+    private boolean hasOtherActiveOrder(Long userId, Long voucherId, Long orderId) {
+        Long count = voucherOrderMapper.selectCount(new QueryWrapper<VoucherOrder>()
+                .eq("user_id", userId)
+                .eq("voucher_id", voucherId)
+                .in("status", 1, 2, 3, 5)
+                .ne("id", orderId));
+        return count != null && count > 0;
+    }
+
+    private void cleanupPending(PendingRef ref) {
+        stringRedisTemplate.delete(pendingKey(ref));
+        removeIndex(ref.member);
+    }
+
+    private void removeIndex(String member) {
+        stringRedisTemplate.opsForZSet().remove(RedisConstants.SECKILL_PENDING_INDEX_KEY, member);
+    }
+
+    private static String pendingKey(PendingRef ref) {
+        return RedisConstants.SECKILL_PENDING_KEY + ref.voucherId + ":" + ref.orderId;
     }
 
     private Long parseUserId(Map<Object, Object> pending) {
@@ -213,6 +254,10 @@ public class OrderReconcilerService {
         }
     }
 
+    private static Long firstNonNull(Long a, Long b) {
+        return a != null ? a : b;
+    }
+
     private String stringValue(Object raw) {
         return raw == null ? null : raw.toString();
     }
@@ -223,5 +268,38 @@ public class OrderReconcilerService {
 
     private enum ReconcileOutcome {
         CLEANUP, RELEASE, REPUBLISH, FENCED, SKIP
+    }
+
+    /** 解析后的 index member：{voucherId}:{orderId}[:{userId}] */
+    static final class PendingRef {
+        final String member;
+        final Long voucherId;
+        final Long orderId;
+        final Long userId;
+
+        private PendingRef(String member, Long voucherId, Long orderId, Long userId) {
+            this.member = member;
+            this.voucherId = voucherId;
+            this.orderId = orderId;
+            this.userId = userId;
+        }
+
+        static PendingRef parse(String member) {
+            if (member == null) {
+                return null;
+            }
+            String[] parts = member.split(":", -1);
+            if (parts.length != 2 && parts.length != 3) {
+                return null;
+            }
+            try {
+                Long voucherId = Long.parseLong(parts[0]);
+                Long orderId = Long.parseLong(parts[1]);
+                Long userId = parts.length == 3 ? Long.parseLong(parts[2]) : null;
+                return new PendingRef(member, voucherId, orderId, userId);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
     }
 }

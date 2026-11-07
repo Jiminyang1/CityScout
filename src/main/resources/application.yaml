@@ -55,6 +55,17 @@ app:
       order-created: order.created
       order-created-dlt: order.created.DLT
       partitions: 8
+    consumer:
+      # 业务失败（如 DB 库存漂移）：首次 + 3 次重试后进 DLT
+      business-retry:
+        interval-ms: 500
+        max-retries: 3
+      # DB / Redis 暂时不可用：指数退避，max-elapsed-ms<=0 表示一直等到依赖恢复
+      transient-retry:
+        initial-interval-ms: 1000
+        multiplier: 2.0
+        max-interval-ms: 30000
+        max-elapsed-ms: 0
   order:
     unpaid-timeout-minutes: 15
     timeout-scan-fixed-delay-ms: 30000
