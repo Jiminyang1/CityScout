@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import com.hmdp.entity.VoucherOrder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -7,6 +8,7 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -24,7 +26,17 @@ public class OrderTimeoutService {
     @Scheduled(fixedDelayString = "${app.order.timeout-scan-fixed-delay-ms:30000}")
     public void cancelExpiredUnpaidOrders() {
         LocalDateTime expireBefore = LocalDateTime.now().minusMinutes(unpaidTimeoutMinutes);
-        int expired = voucherOrderTxService.expireUnpaidOrders(expireBefore, timeoutScanLimit);
+        List<VoucherOrder> orders = voucherOrderTxService.listExpiredUnpaidOrders(expireBefore, timeoutScanLimit);
+        int expired = 0;
+        for (VoucherOrder order : orders) {
+            try {
+                if (voucherOrderTxService.cancelUnpaidOrder(order.getId(), order.getUserId())) {
+                    expired++;
+                }
+            } catch (RuntimeException e) {
+                log.warn("未支付订单超时取消失败, orderId={}", order.getId(), e);
+            }
+        }
         if (expired > 0) {
             log.info("未支付订单超时取消完成, count={}, expireBefore={}", expired, expireBefore);
         }

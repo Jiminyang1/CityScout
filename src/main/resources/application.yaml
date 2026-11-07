@@ -38,7 +38,7 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       enable-auto-commit: false
-      auto-offset-reset: latest
+      auto-offset-reset: earliest
     listener:
       ack-mode: manual_immediate
   jackson:
@@ -48,6 +48,8 @@ mybatis-plus:
   type-aliases-package: com.hmdp.entity # 别名扫描包
 
 app:
+  upload:
+    image-dir: ./data/imgs
   kafka:
     topic:
       order-created: order.created

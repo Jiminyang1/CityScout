@@ -29,10 +29,10 @@ public class MvcConfig implements WebMvcConfigurer {
                         "/api/user/code", // 发送验证码
                         "/api/user/login", // 登录
                         "/api/blog/hot", // 热门博客
-                        "/api/shop/**", // 商铺相关
+                        "/api/shop/*", // 商铺详情
+                        "/api/shop/of/**", // 商铺列表
                         "/api/shop-type/**", // 商铺类型
-                        "/api/voucher/**", // 优惠券
-                        "/api/upload/**" // 上传
+                        "/api/voucher/list/**" // 优惠券列表
                 );
 
     }
