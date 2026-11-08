@@ -20,9 +20,10 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，带 React + Vite + TypeScript
                                           Consumer (并发=8, 幂等落库)      │
                                                           │                │
                                               ┌───────────┴─────────────┐  │
-                                          成功                       失败  │
-                                              ↓                          ↓ │
+                                          成功                 业务失败  │
+                                              ↓          (首次+3次重试) ↓ │
                                   事务: INSERT + stock-1            DLT topic
+                                  (DB/Redis 暂时不可用：指数退避重试，不进 DLT)
                                   afterCommit: 清 pending                ↓ │
                                                                     DLT Consumer
                                                                     └─ tb_order_failed
@@ -31,7 +32,9 @@ Spring Boot + Redis + Kafka + MySQL 秒杀系统，带 React + Vite + TypeScript
                                                               定时扫 pending 索引
                                                               ┌─→ DB 有 → 清 pending
                                                               ├─→ failed 有 → 释放
+                                                              ├─→ DLT fence 在 → 跳过
                                                               └─→ 都没有 → 重投 Kafka
+                                                                 (pending 丢了用 member 里的 userId)
                                               OrderReconcilerService (60s/轮)
 ```
 
@@ -107,7 +110,8 @@ JVM 默认时区在 `HmDianPingApplication.main()` 强制设为 UTC，与 MySQL 
   `BlogCommentsServiceImplTest`、`BlogServiceImplTest`、`FollowServiceImplTest`、
   `OrderDltProcessingServiceTest`、`OrderReconcilerServiceTest`、`OrderTimeoutServiceTest`、
   `ShopServiceImplTest`、`UserServiceImplTest`、`VoucherOrderTxServiceTest`、
-  `UploadControllerTest`、`KafkaConsumerConfigTest`、`RefreshTokenInterceptorTest`）
+  `UploadControllerTest`、`KafkaConsumerConfigTest`、`RefreshTokenInterceptorTest`、
+  `TransientFailuresTest`、`SeckillRedisInitializerTest`、`VoucherOrderServiceImplTest`；共 134 个，2 个跳过）
 - `HmDianPingApplicationTests` 中的两个手动集成辅助方法需要本地 MySQL 和 Redis，默认跳过
 - 前端：`cd frontend && npm run lint && npm run build`
 - Docker/gateway：`docker compose config`，`docker compose up -d --build mysql redis kafka backend gateway`
